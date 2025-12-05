@@ -1,6 +1,7 @@
 import { Bell, LogOut, UserCircle2 } from 'lucide-react';
 import { MembershipTier } from '../../types/membership';
 import { useState, useRef, useEffect } from 'react';
+import packageJson from '../../../package.json';
 
 type TopBarProps = {
   title: string;
@@ -33,6 +34,7 @@ const lampColor: Record<MembershipTier, string> = {
 const TopBar = ({ title, userLoginId, membership = 'moonager', onLogout }: TopBarProps) => {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const appVersion = packageJson.version;
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -49,7 +51,12 @@ const TopBar = ({ title, userLoginId, membership = 'moonager', onLogout }: TopBa
 
   return (
     <header className="flex h-16 items-center justify-between border-b border-gray-200 bg-white px-8">
-      <div className="flex flex-col" aria-hidden="true" />
+      <div className="flex items-center gap-2">
+        <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-800 shadow-sm">
+          Musinsa Manager <span className="text-gray-500">v{appVersion}</span>
+        </div>
+        <span className="text-sm font-semibold text-gray-900">{title}</span>
+      </div>
 
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2 rounded-full border border-gray-100 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-700 shadow-sm transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md">

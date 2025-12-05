@@ -12,6 +12,13 @@ contextBridge.exposeInMainWorld('musinsaLogin', {
   onResult: (callback: (result: { status: string; reason?: string }) => void) =>
     ipcRenderer.on('musinsa:loginResult', (_event, data) => callback(data)),
   sendLogin: (payload: { loginId: string; password: string }) => ipcRenderer.invoke('musinsa:login', payload),
+  onUpdateStatus: (callback: (data: { status: string; version?: string; percent?: number; message?: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('app:updateStatus', listener);
+    return () => ipcRenderer.removeListener('app:updateStatus', listener);
+  },
+  startUpdate: () => ipcRenderer.invoke('app:startUpdate'),
+  loginSupabase: (payload: { loginId: string; password: string }) => ipcRenderer.invoke('app:loginSupabase', payload),
   fetchReviewTargets: () => ipcRenderer.invoke('musinsa:fetchReviewTargets'),
   fetchSessionStatus: () => ipcRenderer.invoke('musinsa:fetchSessionStatus'),
   onSessionStatus: (callback: (result: { status: 'online' | 'offline'; checkedAt: number; reason?: string }) => void) =>

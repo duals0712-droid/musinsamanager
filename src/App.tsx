@@ -201,6 +201,7 @@ const OrdersDownloadView = () => {
     }
   };
 
+
   return (
     <div className="space-y-6">
       <header className="space-y-1">
@@ -1663,6 +1664,12 @@ const App = () => {
   const [musinsaActivity, setMusinsaActivity] = useState<'idle' | 'login' | 'logout'>('idle');
   const [musinsaModal, setMusinsaModal] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [dirtyKey, setDirtyKey] = useState(0);
+  const [updateState, setUpdateState] = useState<{
+    status: 'idle' | 'available' | 'downloading' | 'installing' | 'error';
+    version?: string;
+    percent?: number;
+    message?: string;
+  }>({ status: 'idle' });
 
   useEffect(() => {
     if (window.musinsaLogin?.onResult) {
@@ -1700,8 +1707,80 @@ const App = () => {
     }
   }, []);
 
+  useEffect(() => {
+    const offUpdate = window.musinsaLogin?.onUpdateStatus?.((data) => {
+      if (!data) return;
+      if (data.status === 'available') {
+        setUpdateState({ status: 'available', version: data.version });
+      } else if (data.status === 'downloading') {
+        setUpdateState({ status: 'downloading', version: data.version, percent: data.percent });
+      } else if (data.status === 'downloaded') {
+        setUpdateState({ status: 'installing', version: data.version });
+      } else if (data.status === 'error') {
+        setUpdateState({ status: 'idle' });
+      } else if (data.status === 'idle') {
+        setUpdateState({ status: 'idle' });
+      }
+      console.log('[update] status', data);
+    });
+    return () => {
+      offUpdate?.();
+    };
+  }, []);
+
+  const triggerUpdate = async () => {
+    try {
+      setUpdateState((prev) => ({ ...prev, status: 'downloading' }));
+      const res = await window.musinsaLogin?.startUpdate?.();
+      if (!res?.ok) {
+        setUpdateState({ status: 'error', message: res?.reason || '업데이트를 시작할 수 없습니다.' });
+      }
+    } catch (e) {
+      setUpdateState({ status: 'error', message: e instanceof Error ? e.message : '업데이트를 시작할 수 없습니다.' });
+    }
+  };
+
+  const renderUpdateOverlay = () =>
+    updateState.status !== 'idle' ? (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4">
+        <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
+          <p className="text-lg font-semibold text-gray-900">새로운 업데이트가 있습니다.</p>
+          {updateState.version && <p className="mt-1 text-sm text-gray-600">버전 {updateState.version}</p>}
+          {updateState.status === 'downloading' && (
+            <p className="mt-2 text-sm text-gray-700">
+              다운로드 중... {updateState.percent ? `${updateState.percent.toFixed(0)}%` : ''}
+            </p>
+          )}
+          {updateState.status === 'installing' && (
+            <p className="mt-2 text-sm text-gray-700">업데이트를 설치하는 중입니다. 잠시만 기다려주세요.</p>
+          )}
+          {updateState.status === 'error' && (
+            <p className="mt-2 text-sm text-red-600">{updateState.message || '업데이트 중 오류가 발생했습니다.'}</p>
+          )}
+          <div className="mt-5">
+            <button
+              onClick={triggerUpdate}
+              disabled={updateState.status === 'downloading' || updateState.status === 'installing'}
+              className="w-full rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {updateState.status === 'downloading'
+                ? '다운로드 중...'
+                : updateState.status === 'installing'
+                  ? '설치 중...'
+                  : '업데이트'}
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : null;
+
   if (!session) {
-    return <AuthGate onAuthenticated={setSession} musinsaSession={musinsaSession} />;
+    return (
+      <>
+        <AuthGate onAuthenticated={setSession} musinsaSession={musinsaSession} />
+        {renderUpdateOverlay()}
+      </>
+    );
   }
 
   const isTrial = session.membership === 'trial';
@@ -1818,6 +1897,7 @@ const App = () => {
           </div>
         </div>
       )}
+      {renderUpdateOverlay()}
     </AppLayout>
   );
 };

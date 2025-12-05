@@ -7,9 +7,16 @@
   });
 
   contextBridge.exposeInMainWorld('musinsaLogin', {
-    onResult: (callback) => ipcRenderer.on('musinsa:loginResult', (_event, data) => callback(data)),
-    sendLogin: (payload) => ipcRenderer.invoke('musinsa:login', payload),
-    fetchReviewTargets: () => ipcRenderer.invoke('musinsa:fetchReviewTargets'),
+  onResult: (callback) => ipcRenderer.on('musinsa:loginResult', (_event, data) => callback(data)),
+  sendLogin: (payload) => ipcRenderer.invoke('musinsa:login', payload),
+  onUpdateStatus: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('app:updateStatus', listener);
+    return () => ipcRenderer.removeListener('app:updateStatus', listener);
+  },
+  startUpdate: () => ipcRenderer.invoke('app:startUpdate'),
+  loginSupabase: (payload) => ipcRenderer.invoke('app:loginSupabase', payload),
+  fetchReviewTargets: () => ipcRenderer.invoke('musinsa:fetchReviewTargets'),
   fetchSessionStatus: () => ipcRenderer.invoke('musinsa:fetchSessionStatus'),
   onSessionStatus: (callback) => ipcRenderer.on('musinsa:sessionStatus', (_event, data) => callback(data)),
   onSyncProgress: (callback) => {

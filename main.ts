@@ -2,6 +2,8 @@ import { app, BrowserWindow, shell, ipcMain, IpcMainEvent, Session, dialog } fro
 import * as path from 'path';
 import * as fs from 'fs';
 import * as XLSX from 'xlsx-js-style';
+import { autoUpdater } from 'electron-updater';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 // 백그라운드 창에서도 타이머/스크립트가 멈추지 않도록 렌더러 백그라운딩을 비활성화합니다.
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
@@ -12,6 +14,7 @@ let musinsaWindow: BrowserWindow | null = null;
 let musinsaReviewWindow: BrowserWindow | null = null;
 let initialMusinsaLoginPrompted = false;
 let musinsaSessionTimer: NodeJS.Timeout | null = null;
+let updateDownloading = false;
 const MUSINSA_ALERT_WORLD_ID = 99;
 const MUSINSA_CONFIRM_CONCURRENCY = 3;
 const USER_AGENTS = [
@@ -20,6 +23,13 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
 ];
 const pickUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+const isDevBuild = !!process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === 'development';
+const sendUpdateStatus = (payload: { status: string; version?: string; percent?: number; message?: string }) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('app:updateStatus', payload);
+};
+
+const APP_TITLE = 'Musinsa Manager';
 
 const applySessionHardening = (ses: Session) => {
   if ((ses as any).__mm_hardened) return;
@@ -59,11 +69,22 @@ const enableInspectOnRightClick = (win: BrowserWindow) => {
 };
 
 // __dirname은 CJS 환경에서만 정의되므로, 없을 경우 현재 작업 디렉터리로 대체
-const baseDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+const baseDir = app.isPackaged ? app.getAppPath() : process.cwd();
+const iconPath = path.join(baseDir, 'icon.ico');
+
+const SUPABASE_URL = 'https://vkubhjkwllpqecgbcubl.supabase.co';
+const SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZrdWJoamt3bGxwcWVjZ2JjdWJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyMzYxNjQsImV4cCI6MjA3OTgxMjE2NH0.e0TrKw3ByyXv-rNGspKUcMVb42ZRFxRGBhuEgrC97xI';
+const supabaseNode: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
 
 const createWindow = () => {
   const isDev = !!process.env.VITE_DEV_SERVER_URL;
   const preloadPath = path.join(baseDir, 'preload.js');
+  if (!isDevBuild) {
+    autoUpdater.autoDownload = false;
+  }
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -74,8 +95,10 @@ const createWindow = () => {
     fullscreenable: false,
     autoHideMenuBar: true,
     titleBarStyle: 'default',
+    icon: iconPath,
+    title: APP_TITLE,
     webPreferences: {
-      preload: preloadPath,
+      preload: isDev ? path.join(baseDir, 'preload.js') : path.join(baseDir, 'dist-electron', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -94,13 +117,26 @@ const createWindow = () => {
   if (devServerURL) {
     mainWindow.loadURL(devServerURL);
   } else {
-    const indexPath = path.join(process.cwd(), 'dist', 'index.html');
+    const indexPath = path.join(baseDir, 'dist', 'index.html');
     mainWindow.loadFile(indexPath);
   }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  mainWindow.on('close', () => {
+    // 메인 창이 닫힐 때 백그라운드 창도 함께 정리해 프로세스가 남지 않도록 함
+    if (musinsaWindow && !musinsaWindow.isDestroyed()) {
+      musinsaWindow.destroy();
+      musinsaWindow = null;
+    }
+    if (musinsaReviewWindow && !musinsaReviewWindow.isDestroyed()) {
+      musinsaReviewWindow.destroy();
+      musinsaReviewWindow = null;
+    }
+    app.quit();
   });
 
   mainWindow.on('closed', () => {
@@ -116,10 +152,11 @@ const createMusinsaWindow = () => {
     show: false,
     skipTaskbar: true,
     autoHideMenuBar: true,
+    icon: iconPath,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(baseDir, 'musinsa-preload.js'),
+      preload: path.join(baseDir, 'dist-electron', 'musinsa-preload.js'),
       disableDialogs: true,
       backgroundThrottling: false,
     },
@@ -238,10 +275,11 @@ const ensureReviewWindow = async () => {
     show: reviewWindowVisible,
     skipTaskbar: !reviewWindowVisible,
     autoHideMenuBar: true,
+    icon: iconPath,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(baseDir, 'musinsa-preload.js'),
+      preload: path.join(baseDir, 'dist-electron', 'musinsa-preload.js'),
       disableDialogs: true,
       backgroundThrottling: false,
     },
@@ -1816,6 +1854,43 @@ ipcMain.handle('musinsa:closeReviewWindow', async () => {
   return { ok: true as const };
 });
 
+ipcMain.handle('app:loginSupabase', async (_event, payload: { loginId: string; password: string }) => {
+  const loginId = (payload?.loginId || '').trim();
+  const password = payload?.password || '';
+  if (!loginId || !password) {
+    return { ok: false as const, message: '아이디와 비밀번호를 입력하세요.' };
+  }
+  const email = `${loginId}@local.fake`;
+  try {
+    const { data, error } = await supabaseNode.auth.signInWithPassword({ email, password });
+    if (error || !data?.user) {
+      return { ok: false as const, message: error?.message || '로그인에 실패했습니다.' };
+    }
+    const userId = data.user.id;
+    const { data: profile, error: profileError } = await supabaseNode
+      .from('profiles')
+      .select('login_id, membership_tier')
+      .eq('id', userId)
+      .maybeSingle();
+    if (profileError) {
+      console.warn('[auth] profile fetch error', profileError.message);
+    }
+    const membership = (profile?.membership_tier as string | null) ?? 'trial';
+    const normalizedLoginId = profile?.login_id ?? loginId;
+    return {
+      ok: true as const,
+      session: {
+        userId,
+        loginId: normalizedLoginId,
+        membership,
+      },
+    };
+  } catch (e: any) {
+    console.warn('[auth] supabase login failed', e?.message || e);
+    return { ok: false as const, message: e?.message || '로그인에 실패했습니다.' };
+  }
+});
+
 ipcMain.handle('musinsa:syncOrdersRange', async (_event, payload: { startDate: string; endDate: string }) => {
   const win = musinsaWindow;
   if (!win || win.isDestroyed()) return { ok: false as const, reason: 'musinsa_window_missing' };
@@ -2146,6 +2221,21 @@ ipcMain.handle('musinsa:syncOrdersRange', async (_event, payload: { startDate: s
   return runWithRetry();
 });
 
+ipcMain.handle('app:startUpdate', async () => {
+  if (isDevBuild) return { ok: false as const, reason: 'dev_mode' };
+  try {
+    if (updateDownloading) return { ok: true as const };
+    updateDownloading = true;
+    sendUpdateStatus({ status: 'downloading' });
+    await autoUpdater.downloadUpdate();
+    return { ok: true as const };
+  } catch (e: any) {
+    updateDownloading = false;
+    sendUpdateStatus({ status: 'error', message: e?.message || 'update_failed' });
+    return { ok: false as const, reason: e?.message || 'update_failed' };
+  }
+});
+
 ipcMain.handle('musinsa:fetchSessionStatus', async () => {
   const status = await checkMusinsaSession();
   sendSessionStatus(status);
@@ -2293,6 +2383,32 @@ app.whenReady().then(() => {
   createWindow();
   createMusinsaWindow();
   startMusinsaSessionWatch();
+  if (!isDevBuild) {
+    autoUpdater.autoDownload = false;
+    autoUpdater.on('update-available', (info) => {
+      sendUpdateStatus({ status: 'available', version: info?.version });
+    });
+    autoUpdater.on('download-progress', (p) => {
+      sendUpdateStatus({ status: 'downloading', percent: p?.percent });
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      sendUpdateStatus({ status: 'downloaded', version: info?.version });
+      setTimeout(() => {
+        autoUpdater.quitAndInstall();
+      }, 500);
+    });
+    autoUpdater.on('error', (err) => {
+      updateDownloading = false;
+      if (err?.message && err.message.includes('No published versions')) {
+        sendUpdateStatus({ status: 'idle' });
+        return;
+      }
+      sendUpdateStatus({ status: 'error', message: err?.message || 'update_error' });
+    });
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.warn('[autoUpdater] check failed', err);
+    });
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -2303,7 +2419,31 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
+  // 메인 창이 닫히면 보조 창도 함께 종료
+  if (musinsaWindow && !musinsaWindow.isDestroyed()) {
+    musinsaWindow.close();
   }
+  if (musinsaReviewWindow && !musinsaReviewWindow.isDestroyed()) {
+    musinsaReviewWindow.close();
+  }
+  app.quit();
 });
+
+// autoUpdater 상태 로그를 콘솔로 출력해 업데이트 이슈를 진단하기 쉽게 함
+if (!isDevBuild) {
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[autoUpdater] checking for update');
+  });
+  autoUpdater.on('update-not-available', (info) => {
+    console.log('[autoUpdater] no update', info?.version);
+  });
+  autoUpdater.on('update-available', (info) => {
+    console.log('[autoUpdater] update available', info?.version);
+  });
+  autoUpdater.on('download-progress', (p) => {
+    console.log('[autoUpdater] download progress', p?.percent?.toFixed?.(1) ?? p?.percent);
+  });
+  autoUpdater.on('error', (err) => {
+    console.warn('[autoUpdater] error', err);
+  });
+}

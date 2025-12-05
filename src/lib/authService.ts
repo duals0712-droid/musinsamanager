@@ -20,36 +20,52 @@ export const loginWithPassword = async (loginId: string, password: string): Prom
     throw new Error('아이디와 비밀번호를 입력하세요.');
   }
 
+  if (window.musinsaLogin?.loginSupabase) {
+    const res = await window.musinsaLogin.loginSupabase({ loginId, password });
+    if (!res?.ok || !('session' in res)) {
+      throw new Error(res?.message || '로그인에 실패했습니다.');
+    }
+    return res.session as AuthSession;
+  }
+
   if (!supabase) {
-    return fallbackSession(loginId);
+    throw new Error('Supabase 클라이언트가 초기화되지 않았습니다.');
   }
 
   const email = toEmail(loginId);
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error || !data.user) {
-    throw new Error(error?.message ?? '로그인에 실패했습니다.');
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error || !data.user) {
+      throw new Error(error?.message ?? '로그인에 실패했습니다.');
+    }
+
+    const userId = data.user.id;
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('login_id, membership_tier')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (profileError) {
+      // 로그인은 계속 진행하지만 프로필 조회 실패를 알려줌
+      console.warn('[auth] profile fetch error', profileError.message);
+    }
+
+    const membership = (profile?.membership_tier as MembershipTier | null) ?? 'trial';
+    const normalizedLoginId = profile?.login_id ?? loginId;
+
+    return {
+      userId,
+      loginId: normalizedLoginId,
+      membership,
+    };
+  } catch (e: any) {
+    const msg = e?.message || '';
+    if (msg.includes('Unexpected token') || msg.toLowerCase().includes('json')) {
+      throw new Error('Supabase 응답이 유효하지 않습니다. 네트워크 연결과 Supabase URL/키 설정을 확인하세요.');
+    }
+    throw e;
   }
-
-  const userId = data.user.id;
-  const { data: profile, error: profileError } = await supabase
-    .from('profiles')
-    .select('login_id, membership_tier')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (profileError) {
-    // 로그인은 계속 진행하지만 프로필 조회 실패를 알려줌
-    console.warn('[auth] profile fetch error', profileError.message);
-  }
-
-  const membership = (profile?.membership_tier as MembershipTier | null) ?? 'trial';
-  const normalizedLoginId = profile?.login_id ?? loginId;
-
-  return {
-    userId,
-    loginId: normalizedLoginId,
-    membership,
-  };
 };
 
 export const signUpWithLoginId = async (

@@ -7,6 +7,14 @@ declare global {
     musinsaLogin?: {
       onResult: (callback: (result: { status: string; reason?: string }) => void) => void;
       sendLogin: (payload: { loginId: string; password: string }) => Promise<any>;
+      onUpdateStatus: (
+        callback: (data: { status: string; version?: string; percent?: number; message?: string }) => void,
+      ) => () => void;
+      startUpdate: () => Promise<{ ok: boolean; reason?: string }>;
+      loginSupabase: (payload: { loginId: string; password: string }) => Promise<
+        | { ok: true; session: { userId: string; loginId: string; membership: string } }
+        | { ok: false; message?: string }
+      >;
       fetchReviewTargets: () => Promise<any>;
       fetchSessionStatus: () => Promise<any>;
       onSessionStatus: (callback: (result: { status: 'online' | 'offline'; checkedAt: number; reason?: string }) => void) => void;
