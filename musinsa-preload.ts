@@ -145,10 +145,21 @@ contextBridge.exposeInMainWorld('musinsaBridge', {
   readFile: (path: string) => ipcRenderer.invoke('musinsa:readFile', { path }),
   setFileInputFiles: (selector: string, files: string[]) =>
     ipcRenderer.invoke('musinsa:setFileInputFiles', { selector, files }),
+  fetchGoodsDetail: (payload: { goodsNo: string }) => ipcRenderer.invoke('musinsa:fetchGoodsDetail', payload),
+  fetchProductPageState: (payload: { goodsNo: string }) => ipcRenderer.invoke('musinsa:fetchProductPageState', payload),
+  fetchPointSummary: () => ipcRenderer.invoke('musinsa:fetchPointSummary'),
+  fetchCoupons: (payload: { goodsNo: string; brand?: string; comId?: string; salePrice?: number }) =>
+    ipcRenderer.invoke('musinsa:fetchCoupons', payload),
   debugLog: (message: string, meta?: any) =>
     ipcRenderer.send('musinsa:debugLog', {
       source: 'musinsa-preload',
       message,
       meta,
     }),
+});
+
+contextBridge.exposeInMainWorld('telegramHelper', {
+  getChatId: (payload: { token: string }) => ipcRenderer.invoke('telegram:getChatId', payload),
+  sendTestMessage: (payload: { token: string; chatId: string; text?: string }) =>
+    ipcRenderer.invoke('telegram:testSend', payload),
 });

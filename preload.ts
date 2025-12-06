@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('musinsaLogin', {
     ipcRenderer.on('app:updateStatus', listener);
     return () => ipcRenderer.removeListener('app:updateStatus', listener);
   },
+  checkInventory: (payload: { goodsUrl: string }) => ipcRenderer.invoke('app:checkInventory', payload),
   startUpdate: () => ipcRenderer.invoke('app:startUpdate'),
   loginSupabase: (payload: { loginId: string; password: string }) => ipcRenderer.invoke('app:loginSupabase', payload),
   fetchReviewTargets: () => ipcRenderer.invoke('musinsa:fetchReviewTargets'),
@@ -35,8 +36,19 @@ contextBridge.exposeInMainWorld('musinsaLogin', {
   writeReviewsDom: (items: any[]) => ipcRenderer.invoke('musinsa:writeReviewsDom', { items }),
   syncOrdersRange: (payload: { startDate: string; endDate: string }) =>
     ipcRenderer.invoke('musinsa:syncOrdersRange', payload),
+  fetchGoodsDetail: (payload: { goodsNo: string }) => ipcRenderer.invoke('musinsa:fetchGoodsDetail', payload),
+  fetchProductPageState: (payload: { goodsNo: string }) => ipcRenderer.invoke('musinsa:fetchProductPageState', payload),
+  fetchPointSummary: () => ipcRenderer.invoke('musinsa:fetchPointSummary'),
+  fetchCoupons: (payload: { goodsNo: string; brand?: string; comId?: string; salePrice?: number }) =>
+    ipcRenderer.invoke('musinsa:fetchCoupons', payload),
   saveOrderXlsxData: (orders: any[]) => ipcRenderer.invoke('app:saveOrderXlsxData', { orders }),
   openPath: (path: string) => ipcRenderer.invoke('app:openPath', { path }),
   showInFolder: (path: string) => ipcRenderer.invoke('app:showInFolder', { path }),
   closeReviewWindow: () => ipcRenderer.invoke('musinsa:closeReviewWindow'),
+});
+
+contextBridge.exposeInMainWorld('telegramHelper', {
+  getChatId: (payload: { token: string }) => ipcRenderer.invoke('telegram:getChatId', payload),
+  sendTestMessage: (payload: { token: string; chatId: string; text?: string }) =>
+    ipcRenderer.invoke('telegram:testSend', payload),
 });

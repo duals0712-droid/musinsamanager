@@ -1,5 +1,5 @@
 import { ElementType, useEffect, useState } from 'react';
-import { Download, Info, LogIn, Settings, Sparkles, TrendingUp } from 'lucide-react';
+import { Box, Download, Info, LogIn, Settings, Sparkles, TrendingUp } from 'lucide-react';
 
 type SidebarProps = {
   activeMenu: string;
@@ -18,6 +18,7 @@ type MenuItem = {
 const menus: MenuItem[] = [
   { label: '주문내역 관리', icon: Download },
   { label: '자동 후기작성', icon: Sparkles },
+  { label: '상품 재고조회', icon: Box },
   { label: '상품 가격 추적', icon: TrendingUp },
 ];
 
@@ -84,7 +85,7 @@ const Sidebar = ({
       <div className="space-y-6">
         <div className="flex items-center gap-3 rounded-xl px-2 py-2 transition-all duration-200 hover:scale-[1.01] hover:bg-white/5">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-gray-900 shadow-sm transition duration-150 hover:shadow-md">
-            <Sparkles size={22} />
+            <img src="/icon.ico" alt="앱 아이콘" className="h-7 w-7" />
           </div>
           <div className="flex flex-col">
             <span className="text-sm font-medium text-gray-400">Musinsa</span>

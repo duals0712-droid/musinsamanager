@@ -55,19 +55,6 @@ const applySessionHardening = (ses: Session) => {
   });
 };
 
-const enableInspectOnRightClick = (win: BrowserWindow) => {
-  win.webContents.on('context-menu', (event, params) => {
-    event.preventDefault();
-    // 우클릭 시 바로 DevTools로 포커싱
-    win.webContents.inspectElement(params.x, params.y);
-    if (!win.webContents.isDevToolsOpened()) {
-      win.webContents.openDevTools({ mode: 'right' });
-    } else {
-      win.webContents.devToolsWebContents?.focus();
-    }
-  });
-};
-
 // __dirname은 CJS 환경에서만 정의되므로, 없을 경우 현재 작업 디렉터리로 대체
 const baseDir = app.isPackaged ? app.getAppPath() : process.cwd();
 const iconPath = path.join(baseDir, 'icon.ico');
@@ -81,7 +68,8 @@ const supabaseNode: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KE
 
 const createWindow = () => {
   const isDev = !!process.env.VITE_DEV_SERVER_URL;
-  const preloadPath = path.join(baseDir, 'preload.js');
+  // dev에서도 dist-electron/preload.js를 사용해 최신 브리지가 반영되도록 통일
+  const preloadPath = path.join(baseDir, 'dist-electron', 'preload.js');
   if (!isDevBuild) {
     autoUpdater.autoDownload = false;
   }
@@ -98,10 +86,20 @@ const createWindow = () => {
     icon: iconPath,
     title: APP_TITLE,
     webPreferences: {
-      preload: isDev ? path.join(baseDir, 'preload.js') : path.join(baseDir, 'dist-electron', 'preload.js'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  // 개발 단축키로 DevTools 열기는 유지하되, 우클릭 자동 열기는 비활성화
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const isDevToolsShortcut =
+      (input.key?.toUpperCase() === 'I' && input.control && input.shift) || input.key === 'F12';
+    if (isDevToolsShortcut) {
+      mainWindow?.webContents.openDevTools({ mode: 'detach' });
+      event.preventDefault();
+    }
   });
 
   applySessionHardening(mainWindow.webContents.session);
@@ -145,12 +143,13 @@ const createWindow = () => {
 };
 
 const createMusinsaWindow = () => {
+  const musinsaWindowVisible = false; // 항상 숨김
   musinsaWindow = new BrowserWindow({
     width: 1280,
     height: 900,
     backgroundColor: '#ffffff',
-    show: false,
-    skipTaskbar: true,
+    show: musinsaWindowVisible,
+    skipTaskbar: !musinsaWindowVisible,
     autoHideMenuBar: true,
     icon: iconPath,
     webPreferences: {
@@ -251,10 +250,12 @@ const createMusinsaWindow = () => {
   musinsaWindow.on('closed', () => {
     musinsaWindow = null;
   });
+
+  // 보조창은 항상 숨김, DevTools 미노출
 };
 
 const ensureReviewWindow = async () => {
-  const reviewWindowVisible = process.env.MUSINSA_REVIEW_WINDOW_VISIBLE === '1';
+  const reviewWindowVisible = false; // 항상 숨김
   if (musinsaReviewWindow && !musinsaReviewWindow.isDestroyed()) {
     if (reviewWindowVisible) {
       musinsaReviewWindow.show();
@@ -291,8 +292,6 @@ const ensureReviewWindow = async () => {
     musinsaReviewWindow = null;
   });
 
-  enableInspectOnRightClick(musinsaReviewWindow);
-
   await musinsaReviewWindow.loadURL('https://www.musinsa.com/mypage/myreview');
   if (!reviewWindowVisible) {
     try {
@@ -301,9 +300,7 @@ const ensureReviewWindow = async () => {
       // ignore
     }
   }
-  if (reviewWindowVisible && process.env.NODE_ENV === 'development') {
-    musinsaReviewWindow.webContents.openDevTools({ mode: 'right' });
-  }
+  // 숨김 상태 유지, DevTools 미노출
   return musinsaReviewWindow;
 };
 
@@ -1852,6 +1849,407 @@ ipcMain.handle('musinsa:writeReviewsDom', async (_event, payload: any) => {
 ipcMain.handle('musinsa:closeReviewWindow', async () => {
   closeReviewWindow();
   return { ok: true as const };
+});
+
+ipcMain.handle('musinsa:fetchGoodsDetail', async (_event, payload: { goodsNo: string }) => {
+  try {
+    if (!musinsaWindow || musinsaWindow.isDestroyed()) return { ok: false as const, reason: 'musinsa_window_missing' };
+    const { goodsNo } = payload;
+    const script = `
+      (async () => {
+        const res = await fetch('https://goods-detail.musinsa.com/api2/goods/${goodsNo}', {
+          credentials: 'include',
+          headers: { accept: 'application/json' },
+        });
+        const json = await res.json();
+        return { status: res.status, ok: res.ok, data: json?.data || json || null };
+      })();
+    `;
+    const result = await musinsaWindow.webContents.executeJavaScript(script, true);
+    return result ?? { ok: false as const, reason: 'unknown' };
+  } catch (e: any) {
+    return { ok: false as const, reason: e?.message || 'fetch_failed' };
+  }
+});
+
+ipcMain.handle('musinsa:fetchProductPageState', async (_event, payload: { goodsNo: string }) => {
+  try {
+    if (!musinsaWindow || musinsaWindow.isDestroyed()) return { ok: false as const, reason: 'musinsa_window_missing' };
+    const { goodsNo } = payload;
+    const script = `
+      (async () => {
+        const res = await fetch('https://www.musinsa.com/products/${goodsNo}', { credentials: 'include' });
+        if (!res.ok) return { ok: false, status: res.status };
+        const html = await res.text();
+        const extract = (text) => {
+          const patterns = [
+            /window\\.__MSS_FE__\\.product\\.state\\s*=\\s*(\\{[\\s\\S]*?\\});/,
+            /window\\.__MSS__\\.product\\.state\\s*=\\s*(\\{[\\s\\S]*?\\});/,
+          ];
+          for (const pat of patterns) {
+            const m = text.match(pat);
+            if (m?.[1]) {
+              try { return JSON.parse(m[1].replace(/;$/, '')); } catch {}
+            }
+          }
+          const nextMatch = text.match(/<script id="__NEXT_DATA__"[^>]*>([\\s\\S]*?)<\\/script>/);
+          if (nextMatch?.[1]) {
+            try {
+              const nextData = JSON.parse(nextMatch[1]);
+              return nextData?.props?.pageProps?.meta?.data || null;
+            } catch {}
+          }
+          return null;
+        };
+        const state = extract(html);
+        return { ok: !!state, state };
+      })();
+    `;
+    const result = await musinsaWindow.webContents.executeJavaScript(script, true);
+    return result ?? { ok: false as const, reason: 'unknown' };
+  } catch (e: any) {
+    return { ok: false as const, reason: e?.message || 'fetch_failed' };
+  }
+});
+
+ipcMain.handle('musinsa:fetchCoupons', async (_event, payload: { goodsNo: string; brand?: string; comId?: string; salePrice?: number }) => {
+  try {
+    if (!musinsaWindow || musinsaWindow.isDestroyed()) return { ok: false as const, reason: 'musinsa_window_missing' };
+    const { goodsNo, brand = '', comId = '', salePrice = 0 } = payload;
+    const qs = new URLSearchParams({
+      goodsNo,
+      brand,
+      comId,
+      salePrice: String(salePrice || 0),
+    });
+    const script = `
+      (async () => {
+        const res = await fetch('https://api.musinsa.com/api2/coupon/coupons/getUsableCouponsByGoodsNo?${qs.toString()}', {
+          credentials: 'include',
+          headers: { accept: 'application/json' },
+        });
+        const json = await res.json();
+        return { ok: res.ok, status: res.status, data: json?.data || json || null };
+      })();
+    `;
+    const result = await musinsaWindow.webContents.executeJavaScript(script, true);
+    return result ?? { ok: false as const, reason: 'unknown' };
+  } catch (e: any) {
+    return { ok: false as const, reason: e?.message || 'fetch_failed' };
+  }
+});
+
+ipcMain.handle('musinsa:fetchPointSummary', async () => {
+  try {
+    if (!musinsaWindow || musinsaWindow.isDestroyed()) return { ok: false as const, reason: 'musinsa_window_missing' };
+    const script = `
+      (async () => {
+        const res = await fetch('https://api.musinsa.com/api2/savingpoint/v1/point/list?page=0&searchType=ALL&pageSize=20', {
+          credentials: 'include',
+          headers: { accept: 'application/json' },
+        });
+        const json = await res.json();
+        const summary = json?.data?.summary || json?.summary || null;
+        return { ok: res.ok, status: res.status, summary };
+      })();
+    `;
+    const result = await musinsaWindow.webContents.executeJavaScript(script, true);
+    return result ?? { ok: false as const, reason: 'unknown' };
+  } catch (e: any) {
+    return { ok: false as const, reason: e?.message || 'fetch_failed' };
+  }
+});
+
+ipcMain.handle('telegram:getChatId', async (_event, payload: { token: string }) => {
+  const { token } = payload;
+  if (!token) return { ok: false as const, reason: 'token_missing' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, {
+      headers: { accept: 'application/json' },
+    });
+    const json = await res.json();
+    const updates = json?.result || [];
+    const first = Array.isArray(updates) ? updates.find((u: any) => u?.message?.from?.id || u?.message?.chat?.id) : null;
+    const chatId = first?.message?.from?.id || first?.message?.chat?.id;
+    if (!chatId) {
+      return { ok: false as const, reason: 'chat_id_not_found' };
+    }
+    return { ok: true as const, chatId: String(chatId) };
+  } catch (e: any) {
+    return { ok: false as const, reason: e?.message || 'fetch_failed' };
+  }
+});
+
+ipcMain.handle('telegram:testSend', async (_event, payload: { token: string; chatId: string; text?: string }) => {
+  const { token, chatId, text } = payload;
+  if (!token || !chatId) return { ok: false as const, reason: 'missing_params' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: text || '테스트 메시지 입니다!' }),
+    });
+    const json = await res.json();
+    if (!json?.ok) {
+      return { ok: false as const, reason: json?.description || 'send_failed' };
+    }
+    return { ok: true as const };
+  } catch (e: any) {
+    return { ok: false as const, reason: e?.message || 'send_failed' };
+  }
+});
+
+const extractGoodsNo = (goodsUrl: string): string | null => {
+  const match = String(goodsUrl || '').match(/(?:products|goods)\/(\d+)|\/(\d+)(?:\?|$)/);
+  if (match) {
+    return match[1] || match[2] || null;
+  }
+  return null;
+};
+
+const fetchJsonFromMusinsaWindow = async (url: string, init?: any) => {
+  const win = musinsaWindow;
+  if (!win || win.isDestroyed()) throw new Error('musinsa_window_missing');
+  const script = `
+    (async () => {
+      const res = await fetch(${JSON.stringify(url)}, ${JSON.stringify({
+        ...(init || {}),
+        headers: { 'content-type': 'application/json', accept: 'application/json', ...(init?.headers || {}) },
+        credentials: 'include',
+      })});
+      const json = await res.json();
+      return { status: res.status, ok: res.ok, json };
+    })();
+  `;
+  return win.webContents.executeJavaScript(script, true);
+};
+
+const probeMaxAvailableStock = async (
+  goodsNo: string,
+  optionItemNo: number,
+  fulfillmentCenterId: number,
+  maxProbe = 999,
+): Promise<{ ok: boolean; stock?: number; fc?: number }> => {
+  const check = async (qty: number) => {
+    const res: any = await fetchJsonFromMusinsaWindow(
+      `https://goods-detail.musinsa.com/api2/goods/${goodsNo}/options/check-available-stock`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ fulfillmentCenterId, optionItemNo, quantity: qty }),
+      },
+    );
+    if (!res?.ok) return false;
+    return res?.json?.data?.isOutOfStock === false;
+  };
+
+  const canBuyOne = await check(1);
+  if (!canBuyOne) return { ok: false };
+
+  let lo = 1;
+  let hi = maxProbe;
+  let best = 1;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const ok = await check(mid);
+    if (ok) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+  return { ok: true, stock: best, fc: fulfillmentCenterId };
+};
+
+const withConcurrency = async <T>(tasks: Array<() => Promise<T>>, limit = 5): Promise<T[]> => {
+  const results: T[] = [];
+  let idx = 0;
+  let active = 0;
+  return new Promise((resolve, reject) => {
+    const next = () => {
+      if (idx >= tasks.length && active === 0) {
+        resolve(results);
+        return;
+      }
+      while (active < limit && idx < tasks.length) {
+        const current = tasks[idx];
+        const currentIdx = idx;
+        idx += 1;
+        active += 1;
+        current()
+          .then((res) => {
+            results[currentIdx] = res;
+          })
+          .catch(reject)
+          .finally(() => {
+            active -= 1;
+            next();
+          });
+      }
+    };
+    next();
+  });
+};
+
+ipcMain.handle('app:checkInventory', async (_event, payload: { goodsUrl: string }) => {
+  try {
+    const goodsNo = extractGoodsNo(payload?.goodsUrl || '');
+    if (!goodsNo) return { ok: false as const, reason: 'invalid_goods_no' };
+    if (!musinsaWindow || musinsaWindow.isDestroyed()) return { ok: false as const, reason: 'musinsa_window_missing' };
+
+    const detailUrl = `https://goods-detail.musinsa.com/api2/goods/${goodsNo}`;
+
+    const detailRes: any = await fetchJsonFromMusinsaWindow(detailUrl, { method: 'GET' });
+
+    if (!detailRes?.ok || !detailRes?.json?.data) return { ok: false as const, reason: 'detail_fetch_failed' };
+
+    const detail = detailRes.json?.data || {};
+    const allGoodsNos = new Set<string>();
+    allGoodsNos.add(goodsNo);
+    const mappingGoodsNo = detail?.goodsFillInfo?.mappingGoodsNo ? String(detail.goodsFillInfo.mappingGoodsNo) : null;
+    if (mappingGoodsNo && mappingGoodsNo !== goodsNo) {
+      allGoodsNos.add(mappingGoodsNo);
+    }
+
+    const optionsList: Array<{ goodsNo: string; optionItems: any[] }> = [];
+    for (const g of Array.from(allGoodsNos)) {
+      const optionsUrl = `https://goods-detail.musinsa.com/api2/goods/${g}/options?goodsSaleType=SALE&optKindCd=CLOTHES`;
+      const optRes: any = await fetchJsonFromMusinsaWindow(optionsUrl, { method: 'GET' });
+      if (optRes?.ok && optRes?.json?.data) {
+        const optionItems = Array.isArray(optRes.json?.data?.optionItems) ? optRes.json.data.optionItems : [];
+        optionsList.push({ goodsNo: g, optionItems });
+      }
+    }
+
+    if (optionsList.length === 0) return { ok: false as const, reason: 'options_fetch_failed' };
+
+    const categoryTitles =
+      detail?.category && typeof detail.category === 'object'
+        ? [
+            detail.category.categoryDepth1Title,
+            detail.category.categoryDepth2Title,
+            detail.category.categoryDepth3Title,
+          ]
+        : [detail?.categoryDepth1Title, detail?.categoryDepth2Title, detail?.categoryDepth3Title];
+
+    const thumb = detail?.thumbnailImageUrl || detail?.twitterImage || detail?.listImage || detail?.imageUrl;
+    const normalizedThumb =
+      typeof thumb === 'string' && thumb.startsWith('//')
+        ? 'https:' + thumb
+        : typeof thumb === 'string' && thumb.startsWith('/')
+          ? 'https://image.msscdn.net' + thumb
+          : thumb;
+
+    const meta = {
+      brand: detail?.brandName || detail?.brandInfo?.brandName || '',
+      name: detail?.goodsNm || '',
+      category: categoryTitles.filter(Boolean).join(' > '),
+      goodsNo,
+      imageUrl:
+        normalizedThumb ||
+        (Array.isArray(detail?.imageUrls) && detail.imageUrls[0]?.imageUrl) ||
+        undefined,
+    };
+
+    type RawOpt = { name: string; optionItemNo: number; goodsNo: string };
+    const rawOptions: RawOpt[] = [];
+    for (const group of optionsList) {
+      for (const item of group.optionItems) {
+        const optionItemNo = Number(item?.no);
+        if (!optionItemNo) continue;
+        const name =
+          (Array.isArray(item?.optionValues) && item.optionValues[0]?.name) ||
+          item?.managedCode ||
+          String(optionItemNo);
+        rawOptions.push({ name, optionItemNo, goodsNo: group.goodsNo });
+      }
+    }
+
+    const mappingPairs: Record<number, number> = {};
+    if (Array.isArray(detail?.goodsFillInfo?.mappingOptionItemNos)) {
+      detail.goodsFillInfo.mappingOptionItemNos.forEach((pair: any) => {
+        const base = Number(pair?.optionItemNo);
+        const mapped = Number(pair?.mappingOptionItemNo);
+        if (base && mapped) {
+          mappingPairs[base] = mapped;
+          mappingPairs[mapped] = base;
+        }
+      });
+    }
+
+    const tasks: Array<() => Promise<{
+      name: string;
+      optionItemNo: number;
+      goodsNo: string;
+      stock: number;
+      status: 'ok' | 'out';
+      fc?: number;
+    }>> = rawOptions.map((opt) => async () => {
+      const first = await probeMaxAvailableStock(opt.goodsNo, opt.optionItemNo, 2);
+      const second = first.ok ? first : await probeMaxAvailableStock(opt.goodsNo, opt.optionItemNo, 1);
+      const pick = second.ok ? second : first;
+      if (pick.ok && typeof pick.stock === 'number') {
+        return {
+          ...opt,
+          stock: pick.stock,
+          status: pick.stock > 0 ? 'ok' : 'out',
+          fc: pick.fc,
+        };
+      }
+      return { ...opt, stock: 0, status: 'out', fc: pick.fc };
+    });
+
+    const probed = await withConcurrency(tasks, 6);
+
+    const mergedMap = new Map<string, { name: string; stocks: Record<string, number>; status: 'ok' | 'out' }>();
+    const normalizeName = (n: string) => n?.trim?.() || '';
+
+    probed.forEach((entry) => {
+      const key = normalizeName(entry.name);
+      const existing = mergedMap.get(key) || { name: key, stocks: {}, status: 'out' as const };
+      if (entry.fc === 2) existing.stocks['무신사 직배송'] = entry.stock;
+      else if (entry.fc === 1) existing.stocks['브랜드 배송'] = entry.stock;
+      else existing.stocks['알 수 없음'] = entry.stock;
+      if (entry.stock > 0) existing.status = 'ok';
+      mergedMap.set(key, existing);
+    });
+
+    const options: Array<{ name: string; optionItemNo: number; stock?: number | null; status?: 'ok' | 'out' | 'error'; shipping?: string }> = [];
+    mergedMap.forEach((v) => {
+      const hasMusinsa = typeof v.stocks['무신사 직배송'] === 'number' && v.stocks['무신사 직배송']! > 0;
+      const hasBrand = typeof v.stocks['브랜드 배송'] === 'number' && v.stocks['브랜드 배송']! > 0;
+      let finalStock = 0;
+      let shipping: string | undefined;
+      if (hasMusinsa) {
+        finalStock = v.stocks['무신사 직배송']!;
+        shipping = '무신사 직배송';
+      } else if (hasBrand) {
+        finalStock = v.stocks['브랜드 배송']!;
+        shipping = '브랜드 배송';
+      } else {
+        finalStock = Math.max(v.stocks['무신사 직배송'] ?? 0, v.stocks['브랜드 배송'] ?? 0, 0);
+        shipping = hasMusinsa ? '무신사 직배송' : hasBrand ? '브랜드 배송' : undefined;
+      }
+      options.push({
+        name: v.name,
+        optionItemNo: 0,
+        stock: finalStock,
+        status: finalStock > 0 ? 'ok' : 'out',
+        shipping,
+      });
+    });
+
+    return {
+      ok: true as const,
+      data: {
+        meta,
+        options,
+      },
+    };
+  } catch (e: any) {
+    return { ok: false as const, reason: e?.message || 'inventory_failed' };
+  }
 });
 
 ipcMain.handle('app:loginSupabase', async (_event, payload: { loginId: string; password: string }) => {

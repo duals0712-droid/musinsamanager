@@ -25,6 +25,15 @@ export const loginWithPassword = async (loginId: string, password: string): Prom
     if (!res?.ok || !('session' in res)) {
       throw new Error(res?.message || '로그인에 실패했습니다.');
     }
+    // 렌더러에서도 Supabase Auth 세션을 갖도록 동기화 시도 (RLS 용)
+    if (supabase) {
+      const email = `${loginId}@local.fake`;
+      try {
+        await supabase.auth.signInWithPassword({ email, password });
+      } catch (e) {
+        console.warn('[auth] renderer supabase sign-in sync failed', e);
+      }
+    }
     return res.session as AuthSession;
   }
 

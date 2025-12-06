@@ -1,15 +1,13 @@
-import { useMemo, useState, useRef } from 'react';
+import { useMemo, useState, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Activity,
-  BarChart3,
   Calendar,
   CheckCircle2,
   ChevronDown,
+  HelpCircle,
   Clock3,
-  FileOutput,
   FileText,
-  Radar,
   Sparkles,
   TrendingUp,
 } from 'lucide-react';
@@ -21,6 +19,15 @@ import { useEffect } from 'react';
 import { MusinsaOrderItem, ReviewFetchResult } from './types/review';
 import type { MusinsaOrderSummary } from './types/orders';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
+import InventoryCheckView from './components/InventoryCheckView';
+import { useTelegramToken } from './hooks/useTelegramToken';
+import guide1 from './guide/1.jpg';
+import guide2 from './guide/2.jpg';
+import guide3 from './guide/3.jpg';
+import guide4 from './guide/4.jpg';
+import guide5 from './guide/5.jpg';
+import guide6 from './guide/6.jpg';
+import guide7 from './guide/7.jpg';
 
 const cardBase =
   'rounded-2xl border border-gray-100 bg-white p-6 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-lg';
@@ -50,19 +57,33 @@ const parseISODate = (s: string) => {
   if (Number.isNaN(d.getTime())) return null;
   return d;
 };
-  const clampDate = (value: string, fallback: string) => {
-    const parsed = parseISODate(value);
-    return parsed ? formatYMD(parsed) : fallback;
-  };
+const clampDate = (value: string, fallback: string) => {
+  const parsed = parseISODate(value);
+  return parsed ? formatYMD(parsed) : fallback;
+};
+
+const telegramGuideSteps = [
+  { image: guide1, description: '우선 텔레그램을 스마트폰에 다운로드 받아줍니다.' },
+  { image: guide2, description: '상단의 검색 버튼을 눌러줍니다.' },
+  { image: guide3, description: "'@botfather' 검색후 상단에 공식마크가 달린 봇파더를 클릭해줍니다." },
+  { image: guide4, description: "스크린샷과 같이 순서대로 진행해준뒤 '토큰'을 복사해줍니다." },
+  { image: guide5, description: '아까 상단의 검색 버튼을 눌러 방금 생성한 봇 이름을 검색후 클릭합니다.' },
+  { image: guide6, description: '채팅 시작을 누르고 아무 메시지나 1개 이상 전송해둡니다.' },
+  {
+    image: guide7,
+    description:
+      "아까 복사했던 토큰을 프로그램 토큰 입력칸에 붙여넣기하고 '자동불러오기' 버튼 클릭 -> 저장 클릭 -> 테스트 발송 클릭하여 자신의 텔레그램으로 알림이 정상적으로 오면 성공!",
+  },
+];
 
 const OrdersDownloadView = () => {
   const today = new Date();
   const defaultEnd = formatYMD(today);
-  const defaultStart = formatYMD(new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000));
+  const defaultStart = formatYMD(new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000));
 
   const [startDate, setStartDate] = useState(defaultStart);
   const [endDate, setEndDate] = useState(defaultEnd);
-  const [rangeTag, setRangeTag] = useState<'7' | '30' | '90' | null>('30');
+  const [rangeTag, setRangeTag] = useState<'7' | '30' | '90' | null>('7');
   const [syncing, setSyncing] = useState(false);
   const [orders, setOrders] = useState<MusinsaOrderSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +97,18 @@ const OrdersDownloadView = () => {
   const [downloadingExcel, setDownloadingExcel] = useState(false);
   const [saveToast, setSaveToast] = useState<{ path: string; key: number } | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchApplied, setSearchApplied] = useState(false);
+  const [appliedSearch, setAppliedSearch] = useState('');
+  const [listOpacity, setListOpacity] = useState(1);
+  const listFadeTimer = useRef<NodeJS.Timeout | null>(null);
+  const [orderLogs, setOrderLogs] = useState<string[]>([]);
+
+  const addOrderLog = (msg: string) => {
+    const now = new Date();
+    const ts = now.toLocaleTimeString('ko-KR', { hour12: false });
+    setOrderLogs((prev) => [`${ts} ${msg}`, ...prev].slice(0, 50));
+  };
 
   const applyQuickRange = (days: number) => {
     const end = new Date();
@@ -107,6 +140,7 @@ const OrdersDownloadView = () => {
     setSyncProgress({ status: 'active', label: '주문 목록 수집 중', percent: 10 });
     setSyncSummary(null);
     setDetailProgress({ done: 0, total: 0 });
+    addOrderLog(`동기화 시작 · ${startDate} ~ ${endDate}`);
     try {
       setSyncProgress({ status: 'active', label: '주문 목록/상세 수집 중', percent: 60 });
       const res = await syncOrdersRange({ startDate, endDate });
@@ -126,16 +160,21 @@ const OrdersDownloadView = () => {
 
       const fetchedOrders = Array.isArray(res.orders) ? res.orders : [];
       setOrders(fetchedOrders);
+      setSearchApplied(false);
+      setAppliedSearch('');
+      setSearchTerm('');
       setSyncSummary({ count: fetchedOrders.length, start: startDate, end: endDate });
       setSyncProgress({
         status: 'done',
         label: fetchedOrders.length > 0 ? `${fetchedOrders.length}건 동기화 완료` : '동기화 완료 (데이터 없음)',
         percent: 100,
       });
+      addOrderLog(`동기화 완료 · ${fetchedOrders.length}건`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : '주문 동기화에 실패했습니다.';
       setError(msg);
       setSyncProgress({ status: 'done', label: '동기화 실패', percent: 0 });
+      addOrderLog(`동기화 실패 · ${msg}`);
     } finally {
       setSyncing(false);
       setDetailProgress(null);
@@ -164,15 +203,37 @@ const OrdersDownloadView = () => {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (listFadeTimer.current) clearTimeout(listFadeTimer.current);
+    };
+  }, []);
+  const normalizedQuery = appliedSearch.trim().toLowerCase();
+  const filteredOrders = useMemo(() => {
+    if (!normalizedQuery) return orders.map((o) => ({ ...o, key: o.orderNo }));
+    return orders
+      .map((order) => {
+        const items = order.items.filter((item) => {
+          const brand = (item.brandName || '').toLowerCase();
+          const name = (item.goodsName || '').toLowerCase();
+          return brand.includes(normalizedQuery) || name.includes(normalizedQuery);
+        });
+        if (items.length === 0) return null;
+        return { ...order, items, key: `${order.orderNo}-filtered` };
+      })
+      .filter(Boolean) as (MusinsaOrderSummary & { key: string })[];
+  }, [orders, normalizedQuery]);
+  const displayedOrders = filteredOrders;
+
   const downloadExcel = async () => {
-    if (orders.length === 0) {
+    if (displayedOrders.length === 0) {
       setError('동기화된 주문이 없습니다.');
       return;
     }
     setError(null);
     setDownloadingExcel(true);
     try {
-      const flat = orders.flatMap((order) =>
+      const flat = displayedOrders.flatMap((order) =>
         order.items.map((item) => ({
           orderDate: order.orderDate,
           orderNo: order.orderNo,
@@ -212,52 +273,72 @@ const OrdersDownloadView = () => {
       </header>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-2xl bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 p-5 shadow-lg ring-1 ring-white/10">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10">
-                <Activity size={18} className="text-white" />
+        <div className="flex min-h-[140px] flex-col rounded-2xl bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 p-5 shadow-lg ring-1 ring-white/10">
+          <div className="flex w-full flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10">
+                  <Activity size={18} className="text-white" />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-300">실시간 진행</p>
+                  <p className="text-lg font-semibold text-white">
+                    {syncProgress.status === 'active'
+                      ? `${syncProgress.label}`
+                      : syncProgress.status === 'done'
+                        ? syncProgress.label
+                        : '아직 실행 이력이 없습니다.'}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-xs text-slate-300">실시간 진행</p>
-                <p className="text-lg font-semibold text-white">
-                  {syncProgress.status === 'active'
-                    ? `${syncProgress.label}`
+              <span
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                  syncProgress.status === 'active'
+                    ? 'bg-white/10 text-white'
                     : syncProgress.status === 'done'
-                      ? syncProgress.label
-                      : '아직 실행 이력이 없습니다.'}
-                </p>
+                      ? 'bg-emerald-500/20 text-emerald-100'
+                      : 'bg-white/10 text-white/70'
+                }`}
+              >
+                {syncProgress.status === 'active' ? '동기화' : syncProgress.status === 'done' ? '완료' : '대기'}
+              </span>
+            </div>
+
+            <div className="rounded-xl bg-white/10 p-3 shadow-inner">
+              <div className="flex items-center justify-between text-[12px] text-white/80">
+                <span>
+                  {syncProgress.status === 'active'
+                    ? '주문 데이터를 불러오는 중'
+                    : syncProgress.status === 'done'
+                      ? '동기화 완료'
+                      : '준비 완료'}
+                </span>
+                <span>{syncProgress.status === 'active' ? `${syncProgress.percent}%` : syncProgress.status === 'done' ? '100%' : '0%'}</span>
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-white/20">
+                <div
+                  className="h-2 rounded-full bg-gradient-to-r from-cyan-300 to-emerald-300 transition-all duration-300"
+                  style={{ width: `${syncProgress.status === 'done' ? 100 : syncProgress.percent}%` }}
+                />
               </div>
             </div>
-            <span
-              className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                syncProgress.status === 'active'
-                  ? 'bg-white/10 text-white'
-                  : syncProgress.status === 'done'
-                    ? 'bg-emerald-500/20 text-emerald-100'
-                    : 'bg-white/10 text-white/70'
-              }`}
-            >
-              {syncProgress.status === 'active' ? '동기화' : syncProgress.status === 'done' ? '완료' : '대기'}
-            </span>
           </div>
 
-          <div className="mt-4 rounded-xl bg-white/10 p-3 shadow-inner">
-            <div className="flex items-center justify-between text-[12px] text-white/80">
-              <span>
-                {syncProgress.status === 'active'
-                  ? '주문 데이터를 불러오는 중'
-                  : syncProgress.status === 'done'
-                    ? '동기화 완료'
-                    : '준비 완료'}
-              </span>
-              <span>{syncProgress.status === 'active' ? `${syncProgress.percent}%` : syncProgress.status === 'done' ? '100%' : '0%'}</span>
+          <div className="mt-4 rounded-xl bg-black/20 p-3 shadow-inner">
+            <div className="flex items-center justify-between text-xs text-white/80">
+              <span className="font-semibold">작업 로그</span>
+              <span>{orderLogs.length}건</span>
             </div>
-            <div className="mt-2 h-2 rounded-full bg-white/20">
-              <div
-                className="h-2 rounded-full bg-gradient-to-r from-cyan-300 to-emerald-300 transition-all duration-300"
-                style={{ width: `${syncProgress.status === 'done' ? 100 : syncProgress.percent}%` }}
-              />
+            <div className="mt-2 h-24 space-y-1 overflow-y-auto rounded-lg bg-black/20 p-3 text-xs text-white/80">
+              {orderLogs.length === 0 ? (
+                <p className="text-white/50">로그가 없습니다.</p>
+              ) : (
+                orderLogs.map((log, idx) => (
+                  <p key={`${log}-${idx}`} className="whitespace-pre-wrap leading-snug">
+                    {log}
+                  </p>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -288,7 +369,7 @@ const OrdersDownloadView = () => {
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-200">시작일</label>
               <div className="relative">
@@ -315,7 +396,7 @@ const OrdersDownloadView = () => {
             </div>
           </div>
 
-          <div className="mt-4 flex flex-col gap-2 md:flex-row">
+          <div className="mt-5 flex flex-col gap-3 md:flex-row md:items-center">
             <button
               onClick={handleSync}
               disabled={syncing}
@@ -325,11 +406,52 @@ const OrdersDownloadView = () => {
             </button>
             <button
               onClick={() => downloadExcel()}
-              disabled={orders.length === 0 || downloadingExcel}
+              disabled={displayedOrders.length === 0 || downloadingExcel}
               className="w-full rounded-lg border border-white/30 bg-transparent px-4 py-2 text-sm font-semibold text-white shadow-sm transition-all duration-150 hover:-translate-y-0.5 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {downloadingExcel ? '엑셀 준비 중...' : '엑셀 다운로드'}
             </button>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center">
+            <div className="flex-1">
+              <input
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="브랜드명 혹은 상품명을 검색하세요."
+                className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/60 shadow-sm focus:border-white/60 focus:outline-none focus:ring-2 focus:ring-white/30"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  if (!searchTerm.trim()) return;
+                  setAppliedSearch(searchTerm.trim());
+                  setSearchApplied(true);
+                  if (listFadeTimer.current) clearTimeout(listFadeTimer.current);
+                  setListOpacity(0);
+                  listFadeTimer.current = setTimeout(() => setListOpacity(1), 180);
+                }}
+                disabled={orders.length === 0 || !searchTerm.trim()}
+                className="rounded-lg border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-all duration-150 hover:-translate-y-0.5 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                조회
+              </button>
+              <button
+                onClick={() => {
+                  setSearchApplied(false);
+                  setAppliedSearch('');
+                  setSearchTerm('');
+                  if (listFadeTimer.current) clearTimeout(listFadeTimer.current);
+                  setListOpacity(0);
+                  listFadeTimer.current = setTimeout(() => setListOpacity(1), 180);
+                }}
+                disabled={orders.length === 0 && !searchApplied}
+                className="rounded-lg border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-all duration-150 hover:-translate-y-0.5 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                초기화
+              </button>
+            </div>
           </div>
 
           {error && (
@@ -344,8 +466,12 @@ const OrdersDownloadView = () => {
         <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-10 text-center text-sm text-gray-600">
           아직 동기화된 주문이 없습니다. 기간을 선택하고 동기화를 시작하세요.
         </div>
+      ) : displayedOrders.length === 0 && searchApplied ? (
+        <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-10 text-center text-sm text-gray-600">
+          검색 결과가 없습니다. 검색어를 변경하거나 초기화해 주세요.
+        </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-3 transition-opacity duration-200" style={{ opacity: listOpacity }}>
           {syncSummary && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-100 bg-white px-4 py-2 text-xs text-gray-700">
               <span>
@@ -353,16 +479,20 @@ const OrdersDownloadView = () => {
               </span>
               <span className="font-semibold">
                 주문서 {syncSummary.count}건 · 상품 수량{' '}
-                {orders.reduce((acc, order) => acc + order.items.reduce((a, it) => a + (it.quantity || 0), 0), 0)}개
+                {displayedOrders.reduce((acc, order) => acc + order.items.reduce((a, it) => a + (it.quantity || 0), 0), 0)}개
               </span>
             </div>
           )}
-          {orders.map((order) => {
+          <div className="space-y-3 transition-all duration-200">
+          {displayedOrders.map((order) => {
             const items = Array.isArray(order.items) ? order.items : [];
             const totals = order.totals || ({} as MusinsaOrderSummary['totals']);
             const totalQty = items.reduce((acc, it) => acc + (it?.quantity || 0), 0);
             return (
-              <div key={order.orderNo} className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+              <div
+                key={(order as any).key || order.orderNo}
+                className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm transition-all duration-200 hover:shadow-md"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-3">
                   <div className="text-left">
                     <p className="text-xs font-semibold text-gray-500">주문번호</p>
@@ -452,6 +582,7 @@ const OrdersDownloadView = () => {
               </div>
             );
           })}
+          </div>
         </div>
       )}
 
@@ -1181,7 +1312,6 @@ const AutoReviewView = ({ session }: { session: AuthSession }) => {
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          log('정보작성 창을 엽니다.');
                           openTemplateModal(base);
                         }}
                         className={`rounded-full px-3 py-1 text-xs font-semibold ${
@@ -1594,68 +1724,1471 @@ const AutoReviewView = ({ session }: { session: AuthSession }) => {
     </>
   );
 };
-const PriceTrackingView = () => (
-  <div className="space-y-6">
-    <header className="space-y-1">
-      <h1 className="text-2xl font-semibold text-gray-900">상품 가격 추적</h1>
-      <p className="text-sm text-gray-500">특정 상품의 가격 변동을 감시하고 임계값 도달 시 알려줍니다.</p>
-    </header>
 
-    <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-      <div className={cardBase}>
-        <div className="flex items-center gap-3">
-          <TrendingUp className="text-gray-800" size={24} />
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">추적 목록</h3>
-            <p className="text-sm text-gray-500">관심 상품을 추가해 가격을 꾸준히 모니터링합니다.</p>
+const PriceTrackingView = ({ session, activeMenu }: { session: AuthSession; activeMenu: string }) => {
+  const [showTokenGuide, setShowTokenGuide] = useState(false);
+  const { token, chatId, setToken, setChatId, save, loading, saving, error, hasSaved } = useTelegramToken({
+    userId: session?.userId,
+    loginId: session?.loginId,
+  });
+  const [showLogs, setShowLogs] = useState(false);
+  const [logsMonth, setLogsMonth] = useState(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() };
+  });
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsData, setLogsData] = useState<{
+    dates: string[];
+    products: string[];
+    priceMap: Record<string, number | undefined>;
+  }>({ dates: [], products: [], priceMap: {} });
+  const [showCalendar, setShowCalendar] = useState(false);
+  const calendarRef = useRef<HTMLDivElement | null>(null);
+  type PriceItem = {
+    id?: number;
+    goodsNo?: string;
+    goodsUrl: string;
+    brandName?: string;
+    goodsName?: string;
+    thumbnailUrl?: string;
+    normalPrice?: number;
+    salePrice?: number;
+    gradeDiscount?: number;
+    lastPrice?: number;
+    couponName?: string;
+    couponAmount?: number;
+    pointSpend?: number;
+    prePointDiscount?: number;
+    targetPrice?: number | null;
+    enabled?: boolean;
+    calcParams?: {
+      basePrice: number;
+      gradeDiscount: number;
+      allowPoint: boolean;
+      maxPointRate: number;
+      isPrePoint: boolean;
+      prePointRate: number;
+      memberPoint: number;
+    };
+  };
+
+  const darkCard =
+    'rounded-2xl border border-slate-800 bg-slate-900 text-white p-6 shadow-lg shadow-slate-900/40 transition-all duration-200 hover:-translate-y-1 hover:shadow-xl';
+
+  const [productUrl, setProductUrl] = useState('');
+  const [items, setItems] = useState<PriceItem[]>([]);
+  const [tableLoading, setTableLoading] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [chatIdLoading, setChatIdLoading] = useState(false);
+  const [testSending, setTestSending] = useState(false);
+  const [tokenStatus, setTokenStatus] = useState<string | null>(null);
+  const [tracking, setTracking] = useState(false);
+  const [selectedAll, setSelectedAll] = useState(false);
+  const [selectedMap, setSelectedMap] = useState<Record<string, boolean>>({});
+  const [trackingLog, setTrackingLog] = useState<string | null>(null);
+  const trackingTimer = useRef<NodeJS.Timeout | null>(null);
+  const trackingTargetsRef = useRef<PriceItem[]>([]);
+  const [trackingBusy, setTrackingBusy] = useState(false);
+  const itemsRef = useRef<PriceItem[]>([]);
+  const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
+  const [availPoint, setAvailPoint] = useState<number | null>(null);
+  const [assumeMaxPoint, setAssumeMaxPoint] = useState(() => {
+    const stored = localStorage.getItem('mm_assume_max_point');
+    return stored === 'true';
+  });
+  const [couponTooltip, setCouponTooltip] = useState<string | null>(null);
+  const [priceToast, setPriceToast] = useState<{ message: string; key: number; leaving: boolean } | null>(null);
+
+  const tokenDisabled = loading || saving;
+  const hasCredentials = hasSaved && !!token && !!chatId;
+
+  useEffect(() => {
+    const close = () => setCouponTooltip(null);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('mm_assume_max_point', assumeMaxPoint ? 'true' : 'false');
+  }, [assumeMaxPoint]);
+
+  const showPriceToast = (message: string) => {
+    const key = Date.now();
+    setPriceToast({ message, key, leaving: false });
+    setTimeout(() => {
+      setPriceToast((prev) => (prev && prev.key === key ? { ...prev, leaving: true } : prev));
+    }, 2400);
+    setTimeout(() => {
+      setPriceToast((prev) => (prev && prev.key === key ? null : prev));
+    }, 2600);
+  };
+
+  useEffect(() => {
+    if (!showCalendar) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (calendarRef.current && !calendarRef.current.contains(e.target as Node)) {
+        setShowCalendar(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showCalendar]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchSupabaseUser = async () => {
+      if (!isSupabaseConfigured || !supabase) return;
+      try {
+        const { data, error: sessionError } = await supabase.auth.getSession();
+        if (!sessionError) {
+          const uid = data?.session?.user?.id;
+          if (uid && !cancelled) setSupabaseUserId(uid);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchSupabaseUser();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const parseGoodsNo = (url: string) => {
+    const match = url.match(/\/(\d+)(?:[/?]|$)/);
+    return match ? match[1] : '';
+  };
+
+  const fetchPointSummary = useCallback(async () => {
+    if (!window.musinsaLogin?.fetchPointSummary) return;
+    try {
+      const res = await window.musinsaLogin.fetchPointSummary();
+      if (res?.ok && res.summary) {
+        const ap = Number(res.summary.availPoint ?? res.summary.totalPoint ?? 0);
+        if (Number.isFinite(ap)) setAvailPoint(ap);
+      }
+    } catch (e) {
+      console.warn('[point] fetch failed', e);
+    }
+  }, []);
+
+  const normalizeThumb = (thumb?: string | null) => {
+    if (!thumb) return '';
+    if (/^https?:\/\//i.test(thumb)) return thumb;
+    if (thumb.startsWith('//')) return `https:${thumb}`;
+    if (thumb.startsWith('/')) return `https://image.msscdn.net${thumb}`;
+    return thumb;
+  };
+
+  const calcMaxBenefitPrice = (
+    data: any,
+    opts?: { availPoint?: number; forceMaxPoint?: boolean },
+  ): { price: number; pointSpend: number; prePointDiscount: number; gradeDiscount: number; params: PriceItem['calcParams'] } => {
+    const goodsPrice = data?.goodsPrice || {};
+    const couponAllowed = !!goodsPrice?.couponDiscount;
+    const base =
+      (couponAllowed ? goodsPrice?.couponPrice : null) ??
+      goodsPrice?.salePrice ??
+      goodsPrice?.price ??
+      goodsPrice?.normalPrice ??
+      0;
+
+    // 등급 할인은 isLimitedDc 가 false 일 때만 적용
+    const gradeRate = !data?.isLimitedDc ? Number(goodsPrice?.memberDiscountRate) || 0 : 0;
+    const gradeDiscountRaw = gradeRate > 0 ? base * (gradeRate / 100) : 0;
+    const gradeDiscount = gradeDiscountRaw > 0 ? Math.floor(gradeDiscountRaw / 10) * 10 : 0;
+    const afterGrade = base - gradeDiscount;
+
+    // 적립금 사용 가능 여부와 한도 (상품별 최대 사용률, 보유 포인트)
+    const allowPoint = !data?.isRestictedUsePoint && !data?.isLimitedPoint;
+    const maxPointRate = Number(data?.maxUsePointRate) || 0;
+    const maxPointUsable = allowPoint ? Math.floor(afterGrade * maxPointRate) : 0;
+    const availPoint = Number(opts?.availPoint ?? data?.point?.memberPoint ?? 0);
+    // 최대 적립금 보기 옵션(forceMaxPoint) 시 보유 적립금과 무관하게 상품별 최대 사용 가능 적립금(7% 등)을 적용
+    const pointBudget = opts?.forceMaxPoint ? maxPointUsable : availPoint;
+    const pointSpend = allowPoint ? Math.min(pointBudget, maxPointUsable) : 0;
+    const afterPoint = afterGrade - pointSpend;
+
+    // 선할인 가능(isPrePoint) 시 적립 예정 포인트(memberSavePointRate)를 추가 할인으로 적용
+    const prePointRate = data?.isPrePoint ? Number(goodsPrice?.memberSavePointRate) || 0 : 0;
+    const prePointRaw = prePointRate > 0 ? afterPoint * (prePointRate / 100) : 0;
+    // 적립금 선할인은 10원 단위로 절사(반내림)
+    const prePointDiscount = prePointRaw > 0 ? Math.floor(prePointRaw / 10) * 10 : 0;
+
+    const finalPrice = Math.max(0, Math.round(afterPoint - prePointDiscount));
+    const params: PriceItem['calcParams'] = {
+      basePrice: base,
+      gradeDiscount,
+      allowPoint,
+      maxPointRate,
+      isPrePoint: !!data?.isPrePoint,
+      prePointRate,
+      memberPoint: Number(data?.point?.memberPoint ?? 0),
+    };
+    return { price: finalPrice, pointSpend, prePointDiscount, gradeDiscount, params };
+  };
+
+  const fetchProductStateFallback = async (goodsNo: string) => {
+    const extractState = (html: string) => {
+      const patterns = [
+        /window\.__MSS_FE__\.product\.state\s*=\s*(\{[\s\S]*?\});/,
+        /window\.__MSS__\.product\.state\s*=\s*(\{[\s\S]*?\});/,
+      ];
+      for (const pat of patterns) {
+        const m = html.match(pat);
+        if (m?.[1]) {
+          try {
+            return JSON.parse(m[1].replace(/;$/, ''));
+          } catch {
+            // keep trying other patterns
+          }
+        }
+      }
+      const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+      if (nextMatch?.[1]) {
+        try {
+          const nextData = JSON.parse(nextMatch[1]);
+          return nextData?.props?.pageProps?.meta?.data || null;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    };
+
+    try {
+      const res = await fetch(`https://www.musinsa.com/products/${goodsNo}`, {
+        credentials: 'include',
+        headers: { accept: 'text/html' },
+      });
+      if (!res.ok) return null;
+      const html = await res.text();
+      return extractState(html);
+    } catch {
+      return null;
+    }
+  };
+
+  const fetchCouponInfo = async (goodsNo: string, brand: string, comId: string, salePrice: number) => {
+    try {
+      if (window.musinsaLogin?.fetchCoupons) {
+        const res = await window.musinsaLogin.fetchCoupons({ goodsNo, brand, comId, salePrice });
+        if (res?.ok) {
+          const first = res.data?.list?.[0];
+          if (first) {
+            return { name: first.couponName || '', amount: Number(first.salePrice) || 0 };
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  };
+
+  const fetchGoodsMeta = async (goodsNo: string, opts?: { availPoint?: number; forceMaxPoint?: boolean }) => {
+    // 반드시 무신사 보조 윈도우 세션을 통해 요청 (CORS 회피)
+    if (!window.musinsaLogin?.fetchGoodsDetail) {
+      throw new Error('무신사 창이 준비되지 않았습니다. 앱을 재시작하거나 무신사 로그인 창을 열어주세요.');
+    }
+    const res = await window.musinsaLogin.fetchGoodsDetail({ goodsNo });
+    if (!res?.ok || !res.data) {
+      throw new Error(res?.reason || '상품 정보를 불러올 수 없습니다.');
+    }
+    let data = res.data;
+    if (!data.point?.memberPoint && window.musinsaLogin?.fetchProductPageState) {
+      const fallback = await window.musinsaLogin.fetchProductPageState({ goodsNo });
+      if (fallback?.ok && fallback.state) {
+        data = {
+          ...data,
+          ...fallback.state,
+          goodsPrice: fallback.state.goodsPrice || data.goodsPrice || {},
+          point: fallback.state.point || data.point || {},
+        };
+      }
+    }
+    const brand = data.brand || data.brandInfo?.brand || '';
+    const comId = data.comId || '';
+    const salePrice =
+      data.goodsPrice?.salePrice || data.goodsPrice?.normalPrice || data.goodsPrice?.price || data.goodsPrice?.couponPrice || 0;
+    const couponInfo = await fetchCouponInfo(goodsNo, brand, comId, salePrice);
+    const goodsPricePatched =
+      couponInfo && salePrice
+        ? {
+            ...data.goodsPrice,
+            couponDiscount: true,
+            couponPrice: Math.max(0, salePrice - couponInfo.amount),
+          }
+        : data.goodsPrice;
+
+    const mapped = await mapGoodsData(goodsNo, { ...data, goodsPrice: goodsPricePatched }, opts);
+    if (couponInfo) {
+      mapped.couponName = couponInfo.name;
+      mapped.couponAmount = couponInfo.amount;
+    }
+    return mapped;
+  };
+
+  const mapGoodsData = (goodsNo: string, data: any, opts?: { availPoint?: number; forceMaxPoint?: boolean }) => {
+    const goodsPrice = data.goodsPrice || {};
+    const couponAllowed = !!goodsPrice?.couponDiscount;
+    const basePrice =
+      (couponAllowed ? goodsPrice?.couponPrice : null) ??
+      goodsPrice?.salePrice ??
+      goodsPrice?.price ??
+      goodsPrice?.normalPrice ??
+      0;
+    const maxBenefit = calcMaxBenefitPrice(data, opts);
+    return {
+      goodsNo,
+      brandName: data.brandInfo?.brandName || data.brand || '',
+      goodsName: data.goodsNm || '',
+      thumbnailUrl: normalizeThumb(data.thumbnailImageUrl),
+      normalPrice: goodsPrice?.normalPrice ?? undefined,
+      salePrice: goodsPrice?.salePrice ?? undefined,
+      gradeDiscount: maxBenefit.gradeDiscount,
+      couponName: '',
+      couponAmount: 0,
+      pointSpend: maxBenefit.pointSpend,
+      prePointDiscount: maxBenefit.prePointDiscount,
+      lastPrice: maxBenefit.price || basePrice || 0,
+      calcParams: maxBenefit.params,
+    };
+  };
+
+  const loadItems = useCallback(async () => {
+    if (!supabaseUserId) return;
+    if (!isSupabaseConfigured || !supabase) return;
+    setTableLoading(true);
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('price_tracking_items')
+        .select('*')
+        .eq('user_id', supabaseUserId)
+        .order('created_at', { ascending: false });
+      if (fetchError) throw new Error(fetchError.message);
+          const mapped =
+            data?.map((row: any) => ({
+              id: row.id,
+              goodsNo: row.goods_no ?? '',
+              goodsUrl: row.goods_url,
+              brandName: row.brand_name ?? '',
+              goodsName: row.goods_name ?? '',
+              thumbnailUrl: row.thumbnail_url ?? '',
+              normalPrice: row.normal_price ?? undefined,
+              salePrice: row.sale_price ?? undefined,
+              gradeDiscount: undefined,
+              lastPrice: row.last_price ?? undefined,
+              couponName: row.coupon_name ?? '',
+              couponAmount: row.coupon_amount ?? undefined,
+              pointSpend: row.point_spend ?? undefined,
+              prePointDiscount: row.pre_point_discount ?? undefined,
+              targetPrice: row.target_price ?? null,
+              enabled: row.enabled ?? true,
+              calcParams: undefined,
+            })) || [];
+      setItems(mapped);
+    } catch (e) {
+      console.warn('[price-tracking] load error', e);
+    } finally {
+      setTableLoading(false);
+    }
+  }, [supabaseUserId]);
+
+  useEffect(() => {
+    loadItems();
+    fetchPointSummary();
+  }, [loadItems, fetchPointSummary]);
+
+  useEffect(() => {
+    // 새로 로드된 목록에 따라 전체 선택 상태 동기화
+    itemsRef.current = items;
+    if (items.length === 0) {
+      if (selectedAll) setSelectedAll(false);
+      if (Object.keys(selectedMap).length > 0) setSelectedMap({});
+      return;
+    }
+    const allSelected = items.every((item) => selectedMap[item.goodsUrl]);
+    if (allSelected !== selectedAll) {
+      setSelectedAll(allSelected);
+    }
+  }, [items, selectedMap, selectedAll]);
+
+  const handleAdd = async () => {
+    setAddError(null);
+    const url = productUrl.trim();
+    const goodsNo = parseGoodsNo(url);
+    if (!url || !goodsNo) {
+      setAddError('올바른 무신사 상품 URL을 입력해주세요.');
+      return;
+    }
+    setAdding(true);
+    try {
+      const meta = await fetchGoodsMeta(goodsNo, { availPoint: assumeMaxPoint ? undefined : availPoint ?? undefined, forceMaxPoint: assumeMaxPoint });
+      const newItem = {
+        goodsNo,
+        goodsUrl: url,
+        brandName: meta.brandName,
+        goodsName: meta.goodsName,
+        thumbnailUrl: meta.thumbnailUrl,
+        couponName: meta.couponName,
+        couponAmount: meta.couponAmount,
+        pointSpend: meta.pointSpend,
+        prePointDiscount: meta.prePointDiscount,
+        normalPrice: meta.normalPrice,
+        salePrice: meta.salePrice,
+        gradeDiscount: meta.gradeDiscount,
+        lastPrice: meta.lastPrice,
+        targetPrice: null,
+        enabled: true,
+        calcParams: meta.calcParams,
+      };
+
+      if (isSupabaseConfigured && supabase && supabaseUserId) {
+        const { error: upsertError, data } = await supabase
+                  .from('price_tracking_items')
+                  .upsert(
+                    {
+                      user_id: supabaseUserId,
+                      goods_no: goodsNo,
+                      goods_url: url,
+                      brand_name: newItem.brandName,
+                      goods_name: newItem.goodsName,
+                      thumbnail_url: newItem.thumbnailUrl,
+                      last_price: newItem.lastPrice,
+                      target_price: newItem.targetPrice,
+                      enabled: true,
+                      coupon_name: newItem.couponName,
+                      coupon_amount: newItem.couponAmount,
+                      point_spend: newItem.pointSpend,
+                      pre_point_discount: newItem.prePointDiscount,
+                    },
+                    { onConflict: 'user_id,goods_url' },
+                  )
+          .select()
+          .maybeSingle();
+        if (upsertError) throw new Error(upsertError.message);
+        if (data) {
+          setItems((prev) => {
+            const filtered = prev.filter((p) => p.goodsUrl !== url);
+            return [{ ...newItem, id: data.id }, ...filtered];
+          });
+        }
+      } else {
+        setItems((prev) => {
+          const filtered = prev.filter((p) => p.goodsUrl !== url);
+          return [{ ...newItem, id: Date.now() }, ...filtered];
+        });
+      }
+      setProductUrl('');
+      setSelectedMap((prev) => ({ ...prev, [url]: true }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '상품을 추가하는 중 오류가 발생했습니다.';
+      setAddError(msg);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const getKstDateString = () => {
+    const now = Date.now();
+    const kst = new Date(now + 9 * 60 * 60 * 1000);
+    return kst.toISOString().slice(0, 10);
+  };
+
+  const recordPriceLog = useCallback(
+    async (meta: PriceItem & { goodsNo?: string; lastPrice?: number }) => {
+      if (!isSupabaseConfigured || !supabase || !supabaseUserId) return;
+      if (!meta.goodsNo || meta.lastPrice == null) return;
+      const logDate = getKstDateString();
+      try {
+        await supabase
+          .from('price_tracking_logs')
+          .upsert(
+            {
+              user_id: supabaseUserId,
+              goods_no: meta.goodsNo,
+              goods_name: meta.goodsName,
+              brand_name: meta.brandName,
+              thumbnail_url: meta.thumbnailUrl,
+              log_date: logDate,
+              max_benefit: meta.lastPrice,
+            },
+            { onConflict: 'user_id,goods_no,log_date', ignoreDuplicates: true },
+          );
+      } catch (e) {
+        console.warn('[price-log] upsert error', e);
+      }
+    },
+    [supabaseUserId],
+  );
+
+  const updateTargetPrice = async (id: number | undefined, goodsUrl: string, targetPrice: number | null) => {
+    setItems((prev) => prev.map((p) => (p.goodsUrl === goodsUrl ? { ...p, targetPrice } : p)));
+    if (!id || !isSupabaseConfigured || !supabase || !supabaseUserId) return;
+    try {
+      await supabase
+        .from('price_tracking_items')
+        .update({ target_price: targetPrice })
+        .eq('id', id)
+        .eq('user_id', supabaseUserId);
+    } catch (e) {
+      console.warn('[price-tracking] target price update error', e);
+    }
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedAll((prev) => {
+      const next = !prev;
+      if (next) {
+        const map: Record<string, boolean> = {};
+        items.forEach((item) => {
+          map[item.goodsUrl] = true;
+        });
+        setSelectedMap(map);
+      } else {
+        setSelectedMap({});
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectOne = (goodsUrl: string) => {
+    setSelectedMap((prev) => {
+      const next = { ...prev, [goodsUrl]: !prev[goodsUrl] };
+      const allSelected = items.length > 0 && items.every((item) => next[item.goodsUrl]);
+      setSelectedAll(allSelected);
+      return next;
+    });
+  };
+
+  const refreshAllPrices = useCallback(
+    async (opts?: { withPoints?: boolean }) => {
+      const source = itemsRef.current;
+      if (!source || source.length === 0) return;
+      if (opts?.withPoints) {
+        await fetchPointSummary();
+      }
+      setTableLoading(true);
+      try {
+        const updated: PriceItem[] = [];
+        for (const item of source) {
+          const goodsNo = item.goodsNo || parseGoodsNo(item.goodsUrl);
+          if (!goodsNo) continue;
+          try {
+            const meta = await fetchGoodsMeta(goodsNo, {
+              availPoint: assumeMaxPoint ? undefined : availPoint ?? undefined,
+              forceMaxPoint: assumeMaxPoint,
+            });
+            updated.push({ ...item, ...meta });
+            if (isSupabaseConfigured && supabaseUserId && item.id && supabase) {
+              await supabase
+                .from('price_tracking_items')
+                .update({
+              last_price: meta.lastPrice,
+              last_checked_at: new Date().toISOString(),
+              coupon_name: meta.couponName,
+              coupon_amount: meta.couponAmount,
+              point_spend: meta.pointSpend,
+              pre_point_discount: meta.prePointDiscount,
+            })
+                .eq('id', item.id)
+                .eq('user_id', supabaseUserId);
+            }
+            await recordPriceLog({ ...item, ...meta });
+          } catch (e) {
+            console.warn('[price-tracking] refresh meta error', e);
+          }
+        }
+        if (updated.length > 0) {
+          setItems((prev) =>
+            prev.map((p) => {
+              const next = updated.find((u) => u.goodsUrl === p.goodsUrl);
+              return next ? { ...p, ...next } : p;
+            }),
+          );
+        }
+      } finally {
+        setTableLoading(false);
+      }
+    },
+    [assumeMaxPoint, availPoint, supabaseUserId, fetchPointSummary],
+  );
+
+  const recomputeFromParams = useCallback(
+    (overrideAssume?: boolean, overrideAvail?: number | null) => {
+      const useAssume = typeof overrideAssume === 'boolean' ? overrideAssume : assumeMaxPoint;
+      const useAvail = typeof overrideAvail === 'number' ? overrideAvail : availPoint;
+      setItems((prev) =>
+        prev.map((item) => {
+          if (!item.calcParams) return item;
+          const params = item.calcParams;
+          const afterGrade = params.basePrice - (params.gradeDiscount || 0);
+          const maxPointUsable = params.allowPoint ? Math.floor(afterGrade * params.maxPointRate) : 0;
+          const avail = Number.isFinite(useAvail ?? undefined) ? Number(useAvail) : params.memberPoint ?? 0;
+          const pointBudget = useAssume ? maxPointUsable : avail;
+          const pointSpend = params.allowPoint ? Math.min(pointBudget, maxPointUsable) : 0;
+          const afterPoint = afterGrade - pointSpend;
+          const prePointRate = params.isPrePoint ? params.prePointRate : 0;
+          const prePointRaw = prePointRate > 0 ? afterPoint * (prePointRate / 100) : 0;
+          const prePointDiscount = prePointRaw > 0 ? Math.floor(prePointRaw / 10) * 10 : 0;
+        const price = Math.max(0, Math.round(afterPoint - prePointDiscount));
+          return {
+            ...item,
+            pointSpend,
+            prePointDiscount,
+            lastPrice: price,
+            gradeDiscount: params.gradeDiscount,
+          };
+        }),
+      );
+    },
+    [assumeMaxPoint, availPoint],
+  );
+
+  useEffect(() => {
+    if (items.length === 0) return;
+    recomputeFromParams();
+  }, [assumeMaxPoint, availPoint, recomputeFromParams, items.length]);
+
+  useEffect(() => {
+    if (activeMenu === '상품 가격 추적') {
+      fetchPointSummary();
+      // 메뉴 진입 시에만 전체 새로고침 (토글 등으로 재호출되지 않도록 별도 분리)
+      refreshAllPrices({ withPoints: true });
+    }
+    // refreshAllPrices는 의존성에서 제외해 토글 때 재호출되지 않도록 고정
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMenu, fetchPointSummary]);
+
+  const loadLogs = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase || !supabaseUserId) return;
+    setLogsLoading(true);
+    try {
+      const start = new Date(Date.UTC(logsMonth.year, logsMonth.month, 1));
+      const end = new Date(Date.UTC(logsMonth.year, logsMonth.month + 1, 0));
+      const startStr = start.toISOString().slice(0, 10);
+      const endStr = end.toISOString().slice(0, 10);
+      const { data, error } = await supabase
+        .from('price_tracking_logs')
+        .select('*')
+        .eq('user_id', supabaseUserId)
+        .gte('log_date', startStr)
+        .lte('log_date', endStr)
+        .order('log_date', { ascending: true });
+      if (error) throw new Error(error.message);
+      const products = Array.from(new Set((data || []).map((d) => d.goods_name || d.goods_no))).filter(Boolean) as string[];
+      const dates: string[] = [];
+      for (let d = 1; d <= end.getUTCDate(); d++) {
+        dates.push(`${logsMonth.year}-${String(logsMonth.month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+      }
+      const priceMap: Record<string, number | undefined> = {};
+      (data || []).forEach((row: any) => {
+        const key = `${row.log_date}::${row.goods_name || row.goods_no}`;
+        if (priceMap[key] === undefined) {
+          priceMap[key] = row.max_benefit ?? undefined;
+        }
+      });
+      setLogsData({ dates, products, priceMap });
+    } catch (e) {
+      console.warn('[logs] fetch error', e);
+    } finally {
+      setLogsLoading(false);
+    }
+  }, [logsMonth, supabaseUserId]);
+
+  useEffect(() => {
+    if (showLogs) {
+      loadLogs();
+    }
+  }, [showLogs, loadLogs]);
+
+  const removeSelected = async () => {
+    const targets = items.filter((item) => selectedMap[item.goodsUrl]);
+    if (targets.length === 0) return;
+    setItems((prev) => prev.filter((item) => !selectedMap[item.goodsUrl]));
+    setSelectedMap({});
+    setSelectedAll(false);
+    if (!isSupabaseConfigured || !supabase || !supabaseUserId) return;
+    try {
+      const goodsUrls = targets.map((t) => t.goodsUrl);
+      await supabase.from('price_tracking_items').delete().eq('user_id', supabaseUserId).in('goods_url', goodsUrls);
+    } catch (e) {
+      console.warn('[price-tracking] delete error', e);
+    }
+  };
+
+  const selectedItems = items.filter((item) => selectedMap[item.goodsUrl]);
+  const selectableTargetItems = selectedItems.filter((item) => typeof item.targetPrice === 'number');
+  const invalidSelectionExists = selectedItems.some((item) => typeof item.targetPrice !== 'number');
+
+  const handleToggleTracking = () => {
+    if (tracking) {
+      setTracking(false);
+      setTrackingLog('추적이 중지되었습니다.');
+      trackingTargetsRef.current = [];
+      if (trackingTimer.current) {
+        clearTimeout(trackingTimer.current);
+        trackingTimer.current = null;
+      }
+      return;
+    }
+    if (selectableTargetItems.length === 0 || invalidSelectionExists) {
+      showPriceToast('추적희망가를 입력하세요');
+      return;
+    }
+    setAddError(null);
+    trackingTargetsRef.current = selectableTargetItems;
+    setTracking(true);
+    setTrackingLog('추적을 시작합니다.');
+    runTrackingOnce(selectableTargetItems);
+    scheduleNextTick();
+  };
+
+  const scheduleNextTick = () => {
+    if (trackingTimer.current) clearTimeout(trackingTimer.current);
+    const delay = getDelayToNextHourKST();
+    trackingTimer.current = setTimeout(async () => {
+      await runTrackingOnce(trackingTargetsRef.current);
+      scheduleNextTick();
+    }, delay);
+  };
+
+  const getDelayToNextHourKST = () => {
+    const now = Date.now();
+    const kstOffset = 9 * 60 * 60 * 1000;
+    const kst = now + kstOffset;
+    const date = new Date(kst);
+    date.setMinutes(0, 0, 0);
+    date.setHours(date.getHours() + 1); // 다음 정시
+    const diff = date.getTime() - kst;
+    return diff <= 0 ? 60 * 1000 : diff;
+  };
+
+  const sendTelegram = async (text: string, photoUrl?: string) => {
+    if (!token) return;
+    const chat = chatId || (import.meta as any).env?.VITE_TELEGRAM_CHAT_ID || process.env.VITE_TELEGRAM_CHAT_ID || '';
+    if (!chat) {
+      console.warn('[telegram] chat id가 설정되어 있지 않아 전송을 건너뜁니다.');
+      return;
+    }
+    try {
+      if (photoUrl) {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chat, photo: photoUrl, caption: text, parse_mode: 'Markdown' }),
+        });
+        if (!res.ok) throw new Error('sendPhoto failed');
+      } else {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chat, text }),
+        });
+      }
+    } catch (e) {
+      console.warn('[telegram] send error', e);
+      // photo 실패 시 텍스트만 재시도
+      try {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chat, text }),
+        });
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const runTrackingOnce = async (targets: PriceItem[]) => {
+    if (!targets || targets.length === 0) return;
+    if (trackingBusy) return;
+    setTrackingBusy(true);
+    try {
+      const updated: PriceItem[] = [];
+      for (const item of targets) {
+        const goodsNo = item.goodsNo || parseGoodsNo(item.goodsUrl);
+        if (!goodsNo) continue;
+        try {
+          const meta = await fetchGoodsMeta(goodsNo, { availPoint: assumeMaxPoint ? undefined : availPoint ?? undefined, forceMaxPoint: assumeMaxPoint });
+          const price = typeof meta.lastPrice === 'number' ? meta.lastPrice : 0;
+          const shouldNotify =
+            typeof item.targetPrice === 'number' && Number.isFinite(item.targetPrice) && price <= (item.targetPrice as number);
+          if (shouldNotify) {
+            const photo = meta.thumbnailUrl || item.thumbnailUrl;
+            sendTelegram(
+              `[가격알림] ${meta.brandName || ''} ${meta.goodsName || goodsNo}\n현재가: ${formatMoney(price)}원\n희망가: ${formatMoney(item.targetPrice)}원`,
+              photo,
+            );
+          }
+          updated.push({ ...item, ...meta, lastPrice: price });
+
+          if (isSupabaseConfigured && supabase && supabaseUserId && item.id) {
+            await supabase
+              .from('price_tracking_items')
+              .update({
+                last_price: price,
+                last_checked_at: new Date().toISOString(),
+                coupon_name: meta.couponName,
+                coupon_amount: meta.couponAmount,
+                point_spend: meta.pointSpend,
+                pre_point_discount: meta.prePointDiscount,
+              })
+              .eq('id', item.id)
+              .eq('user_id', supabaseUserId);
+          }
+          await recordPriceLog({ ...item, ...meta, lastPrice: price });
+        } catch (e) {
+          console.warn('[price-tracking] fetch error', e);
+        }
+      }
+      if (updated.length > 0) {
+        setItems((prev) =>
+          prev.map((p) => {
+            const next = updated.find((u) => u.goodsUrl === p.goodsUrl);
+            return next ? { ...p, ...next } : p;
+          }),
+        );
+        const ts = new Date();
+        const kst = new Intl.DateTimeFormat('ko-KR', {
+          timeZone: 'Asia/Seoul',
+          hour12: false,
+          hour: '2-digit',
+          minute: '2-digit',
+        }).format(ts);
+        setTrackingLog(`마지막 체크: ${kst} (총 ${updated.length}건)`);
+      }
+    } finally {
+      setTrackingBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (trackingTimer.current) clearTimeout(trackingTimer.current);
+    };
+  }, []);
+
+  return (
+    <div className="space-y-6">
+      {priceToast && (
+        <div
+          className={`fixed left-1/2 top-4 z-50 -translate-x-1/2 transform transition-all duration-300 ${
+            priceToast.leaving ? 'opacity-0 -translate-y-2' : 'opacity-100 translate-y-0'
+          }`}
+        >
+          <div className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-gray-900/50">
+            {priceToast.message}
           </div>
         </div>
-        <button className="mt-6 w-full rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white transition-all duration-150 hover:-translate-y-0.5 hover:bg-gray-900">
-          상품 추가
-        </button>
+      )}
+      <style>{`
+        @keyframes tracking-blink {
+          0% { background-color: #e0f2fe; }
+          50% { background-color: #a5d8ff; color: #0f172a; }
+          100% { background-color: #e0f2fe; }
+        }
+        .tracking-blink {
+          animation: tracking-blink 3s ease-in-out infinite;
+        }
+        .tracking-blink td {
+          animation: tracking-blink 3s ease-in-out infinite;
+        }
+        @keyframes fade-in-row {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in {
+          animation: fade-in-row 0.25s ease-out;
+        }
+      `}</style>
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold text-gray-900">상품 가격 추적</h1>
+        <p className="text-sm text-gray-500">텔레그램 알림을 위해 토큰을 저장한 뒤 상품을 추가하세요.</p>
+      </header>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <div className={darkCard}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <Sparkles className="text-cyan-300" size={22} />
+              <div>
+                <h3 className="text-lg font-semibold text-white">텔레그램 토큰 입력</h3>
+                <p className="text-sm text-slate-200/80">계정별로 한 번만 저장해두면 자동으로 불러옵니다.</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowTokenGuide(true)}
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-200 transition hover:-translate-y-0.5 hover:bg-slate-800"
+            >
+              <HelpCircle size={18} className="text-cyan-200" />
+            </button>
+          </div>
+
+          <div className="mt-5 space-y-3">
+            <label className="text-xs font-semibold text-slate-200">텔레그램 봇 토큰</label>
+            <input
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="예: 123456789:ABCdefGhIJklmnOpQRstuVWxyz"
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder:text-slate-400 transition focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/30"
+              disabled={tokenDisabled}
+            />
+            <label className="text-xs font-semibold text-slate-200">Chat ID</label>
+            <div className="flex gap-2">
+              <input
+                value={chatId}
+                onChange={(e) => setChatId(e.target.value)}
+                placeholder="예: 123456789 (또는 @채널명)"
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder:text-slate-400 transition focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/30"
+                disabled={tokenDisabled}
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!token) {
+                    setTokenStatus('토큰을 먼저 입력해주세요.');
+                    return;
+                  }
+                  setTokenStatus(null);
+                  setChatIdLoading(true);
+                  try {
+                    const res = await window.telegramHelper?.getChatId?.({ token });
+                    if (res?.ok && res.chatId) {
+                      setChatId(res.chatId);
+                      setTokenStatus('채팅 ID를 자동으로 불러왔습니다.');
+                    } else {
+                      setTokenStatus('채팅 ID를 찾지 못했습니다. 봇에게 메시지를 먼저 보내주세요.');
+                    }
+                  } catch (e) {
+                    setTokenStatus('채팅 ID를 불러오는 중 오류가 발생했습니다.');
+                  } finally {
+                    setChatIdLoading(false);
+                  }
+                }}
+                disabled={tokenDisabled || chatIdLoading}
+                className="whitespace-nowrap rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {chatIdLoading ? '불러오는 중...' : '자동 불러오기'}
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setTokenStatus(null);
+                  save();
+                }}
+                disabled={tokenDisabled}
+                className="flex-1 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? '저장 중...' : hasSaved ? '다시 저장' : '저장'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setTokenStatus(null);
+                  if (!token || !chatId) {
+                    setTokenStatus('토큰과 Chat ID를 모두 입력 후 저장해주세요.');
+                    return;
+                  }
+                  setTestSending(true);
+                  try {
+                    const res = await window.telegramHelper?.sendTestMessage?.({
+                      token,
+                      chatId,
+                      text: '테스트 메시지 입니다!',
+                    });
+                    if (res?.ok) {
+                      setTokenStatus('테스트 메시지를 보냈습니다.');
+                    } else {
+                      setTokenStatus(res?.reason || '테스트 발송에 실패했습니다.');
+                    }
+                  } catch (e) {
+                    setTokenStatus('테스트 발송 중 오류가 발생했습니다.');
+                  } finally {
+                    setTestSending(false);
+                  }
+                }}
+                disabled={!hasCredentials || saving || loading || testSending}
+                className="whitespace-nowrap rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {testSending ? '발송 중...' : '테스트 발송'}
+              </button>
+            </div>
+            {error && <p className="text-xs font-semibold text-red-300">{error}</p>}
+            {tokenStatus && !error && <p className="text-xs font-semibold text-cyan-200">{tokenStatus}</p>}
+            {hasCredentials && !error && !tokenStatus && (
+              <p className="text-xs text-green-200">토큰/Chat ID가 저장되었습니다. 자동으로 불러옵니다.</p>
+            )}
+          </div>
+        </div>
+
+        <div
+          className={`${darkCard} ${
+            hasCredentials ? '' : 'pointer-events-none opacity-50'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <TrendingUp className="text-cyan-300" size={22} />
+            <div>
+              <h3 className="text-lg font-semibold text-white">상품 추가</h3>
+              <p className="text-sm text-slate-200/80">
+                토큰 저장 후 상품을 추가하면 추적 목록에 표시됩니다.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-3">
+            <label className="text-xs font-semibold text-slate-200">상품 URL</label>
+            <input
+              value={productUrl}
+              onChange={(e) => setProductUrl(e.target.value)}
+              placeholder="https://www.musinsa.com/products/5367607"
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder:text-slate-400 transition focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/30"
+              disabled={!hasCredentials || adding}
+            />
+            <button
+              type="button"
+              onClick={handleAdd}
+              disabled={!hasCredentials || !productUrl.trim() || adding}
+              className="w-full rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {adding ? '추가 중...' : '상품 추가'}
+            </button>
+            {addError && <p className="text-xs font-semibold text-red-300">{addError}</p>}
+            <button
+              type="button"
+              onClick={() => setShowLogs(true)}
+              className="w-full rounded-lg border border-cyan-300 px-4 py-3 text-base font-semibold text-cyan-100 transition hover:-translate-y-0.5 hover:bg-slate-800 hover:text-white"
+            >
+              날짜별 상품 추적 로그
+            </button>
+          </div>
+        </div>
       </div>
 
-      <div className={cardBase}>
-        <div className="flex items-center gap-3">
-          <BarChart3 className="text-gray-800" size={24} />
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">가격 히스토리</h3>
-            <p className="text-sm text-gray-500">최근 30일 가격 변동을 간단히 확인합니다.</p>
+      {!showLogs ? (
+        <>
+          <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm">
+            <div className="flex flex-col gap-2 border-b border-gray-100 px-4 py-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-base font-semibold text-gray-900">추적 목록</p>
+                <p className="text-xs text-gray-500">상품을 추가하면 아래 목록에 표시됩니다.</p>
+              </div>
+              <div className="flex flex-1 flex-wrap items-center justify-between gap-3 md:justify-end">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                  <span>
+                    현재 보유 적립금:{' '}
+                    <span className="font-semibold text-gray-900">
+                      {availPoint != null ? `${formatMoney(availPoint)}원` : '-'}
+                    </span>
+                  </span>
+                  <label className="flex cursor-pointer select-none items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={assumeMaxPoint}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setAssumeMaxPoint(checked);
+                        recomputeFromParams(checked, availPoint);
+                      }}
+                    />
+                    최대 적립금(7%) 적용 가격으로 보기
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => refreshAllPrices({ withPoints: true })}
+                      className="rounded-lg border border-gray-200 px-2.5 py-1.5 font-semibold text-gray-700 transition hover:-translate-y-0.5 hover:bg-gray-50"
+                    >
+                      새로고침
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={removeSelected}
+                    disabled={selectedItems.length === 0 || tracking}
+                    className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:-translate-y-0.5 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    선택 삭제
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleToggleTracking}
+                    disabled={items.length === 0}
+                    className={`rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition ${
+                      tracking
+                        ? 'bg-red-600 hover:-translate-y-0.5 hover:bg-red-700'
+                        : 'bg-black hover:-translate-y-0.5 hover:bg-gray-900'
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
+                  >
+                    {tracking ? '추적 중지' : '추적 시작'}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs font-semibold text-gray-700">
-          <div className="rounded-lg bg-gray-50 px-3 py-2">
-            <p className="text-[11px] text-gray-500">최고가</p>
-            <p className="text-lg text-gray-900">129,000</p>
-          </div>
-          <div className="rounded-lg bg-gray-50 px-3 py-2">
-            <p className="text-[11px] text-gray-500">최저가</p>
-            <p className="text-lg text-gray-900">89,000</p>
-          </div>
-          <div className="rounded-lg bg-gray-50 px-3 py-2">
-            <p className="text-[11px] text-gray-500">변동률</p>
-            <p className="text-lg text-gray-900">-12%</p>
-          </div>
-        </div>
-      </div>
 
-      <div className={cardBase}>
-        <div className="flex items-center gap-3">
-          <Radar className="text-gray-800" size={24} />
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">알림 정책</h3>
-            <p className="text-sm text-gray-500">목표가 도달 시 이메일·슬랙으로 알림을 받습니다.</p>
+          <div className="relative overflow-auto">
+            {tableLoading && (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-white/60">
+                <div className="h-10 w-10 animate-spin rounded-full border-4 border-gray-200 border-t-gray-600" />
+              </div>
+            )}
+            <table className="min-w-full divide-y divide-gray-100 text-sm">
+              <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-600">
+                <tr>
+                  <th className="px-3 py-2 text-left">
+                    <input type="checkbox" checked={selectedAll} onChange={toggleSelectAll} disabled={tracking} />
+                  </th>
+                  <th className="px-3 py-2 text-left">이미지</th>
+                  <th className="px-3 py-2 text-left">브랜드</th>
+                  <th className="px-3 py-2 text-left">상품명</th>
+                  <th className="px-3 py-2 text-right">정상가</th>
+                  <th className="px-3 py-2 text-right">할인가</th>
+                  <th className="px-3 py-2 text-right">등급할인</th>
+                  <th className="px-3 py-2 text-right">쿠폰할인</th>
+                  <th className="px-3 py-2 text-right">보유적립금</th>
+                  <th className="px-3 py-2 text-right">적립금선할인</th>
+                  <th className="px-3 py-2 text-right">최대혜택가</th>
+                  <th className="px-3 py-2 text-right">추적희망가</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {items.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="px-3 py-6 text-center text-gray-500">
+                      추가된 상품이 없습니다.
+                    </td>
+                  </tr>
+                ) : (
+                  items.map((item) => {
+                    const isSelected = !!selectedMap[item.goodsUrl];
+                    const hoverClass = tracking || isSelected ? '' : 'hover:bg-gray-100';
+                    const rowClasses = [
+                      'transition',
+                      hoverClass,
+                      tracking ? 'cursor-not-allowed' : 'cursor-pointer',
+                      isSelected ? 'bg-sky-50' : '',
+                      tracking && isSelected ? 'tracking-blink' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
+                    return (
+                      <tr
+                        key={item.goodsUrl}
+                        className={`${rowClasses} fade-in`}
+                        onClick={() => {
+                          if (tracking) return;
+                          toggleSelectOne(item.goodsUrl);
+                        }}
+                      >
+                        <td className="px-3 py-2 align-middle">
+                          <input
+                            type="checkbox"
+                            checked={!!selectedMap[item.goodsUrl]}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              toggleSelectOne(item.goodsUrl);
+                            }}
+                            disabled={tracking}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          {item.thumbnailUrl ? (
+                            <img
+                              src={item.thumbnailUrl}
+                              alt={item.goodsName || '상품 이미지'}
+                              className="h-12 w-12 rounded-lg border border-gray-100 object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-dashed border-gray-200 text-[11px] text-gray-400">
+                              없음
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 align-middle text-gray-800">{item.brandName || '-'}</td>
+                        <td className="px-3 py-2 align-middle text-gray-900">
+                          <div className="max-w-[360px] break-words">{item.goodsName || item.goodsUrl}</div>
+                          <a
+                            href={item.goodsUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[11px] text-blue-600 underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            바로가기
+                          </a>
+                        </td>
+                        <td className="px-3 py-2 align-middle text-right text-gray-800">
+                          {typeof item.normalPrice === 'number' ? `${formatMoney(item.normalPrice)}원` : '-'}
+                        </td>
+                        <td className="px-3 py-2 align-middle text-right text-gray-800">
+                          {typeof item.salePrice === 'number' ? `${formatMoney(item.salePrice)}원` : '-'}
+                        </td>
+                        <td className="px-3 py-2 align-middle text-right text-gray-800">
+                          {typeof item.gradeDiscount === 'number' ? `${formatMoney(item.gradeDiscount)}원` : '-'}
+                        </td>
+                        <td className="px-3 py-2 align-middle text-right text-gray-800">
+                          {item.couponName ? (
+                            <div className="relative flex items-center justify-end gap-1">
+                              <span className="font-semibold text-gray-900">{formatMoney(item.couponAmount || 0)}원</span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setCouponTooltip((prev) => (prev === item.goodsUrl ? null : item.goodsUrl));
+                                }}
+                                className="flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 text-[10px] text-gray-700 hover:bg-gray-100"
+                              >
+                                ?
+                              </button>
+                              {couponTooltip === item.goodsUrl && (
+                                <div
+                                  className="absolute right-0 top-full z-10 mt-1 w-56 rounded-lg bg-gray-900 p-2 text-left text-[11px] text-white shadow-lg"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {item.couponName}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-gray-400">-</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 align-middle text-right text-gray-800">
+                          {typeof item.pointSpend === 'number' ? `${formatMoney(item.pointSpend)}원` : '-'}
+                        </td>
+                        <td className="px-3 py-2 align-middle text-right text-gray-800">
+                          {typeof item.prePointDiscount === 'number' ? `${formatMoney(item.prePointDiscount)}원` : '-'}
+                        </td>
+                        <td className="px-3 py-2 align-middle text-right font-semibold text-red-600">
+                          {typeof item.lastPrice === 'number' ? `${formatMoney(item.lastPrice)}원` : '-'}
+                        </td>
+                        <td className="px-3 py-2 align-middle text-right">
+                          <input
+                            type="text"
+                            value={item.targetPrice == null ? '' : Number(item.targetPrice).toLocaleString()}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              const digits = e.target.value.replace(/[^\d]/g, '');
+                              const num = digits ? Number(digits) : null;
+                              updateTargetPrice(item.id, item.goodsUrl, Number.isFinite(num as number) ? num : null);
+                            }}
+                            disabled={tracking}
+                            placeholder="희망가"
+                            className="w-28 rounded-lg border border-gray-200 px-2 py-1 text-right text-sm focus:border-black focus:outline-none focus:ring-1 focus:ring-black/10 disabled:bg-gray-50"
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+          {trackingLog && (
+            <div className="border-t border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-700">{trackingLog}</div>
+          )}
+        </>
+      ) : (
+        <div className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="rounded-lg border border-black bg-black px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-gray-900"
+                onClick={() => setShowLogs(false)}
+              >
+                ← 돌아가기
+              </button>
+            </div>
+            <div className="flex items-center gap-2 text-sm text-gray-700">
+              <button
+                type="button"
+                className="rounded-md border border-gray-200 px-2 py-1 text-xs"
+                onClick={() =>
+                  setLogsMonth((prev) => {
+                    const m = prev.month - 1;
+                    if (m < 0) return { year: prev.year - 1, month: 11 };
+                    return { year: prev.year, month: m };
+                  })
+                }
+              >
+                이전달
+              </button>
+              <div className="relative" ref={calendarRef}>
+                <button
+                  type="button"
+                  onClick={() => setShowCalendar((v) => !v)}
+                  className="rounded-md border border-gray-200 px-3 py-1 text-xs font-semibold text-gray-800 hover:-translate-y-0.5 hover:bg-gray-50"
+                >
+                  {logsMonth.year}년 {logsMonth.month + 1}월
+                </button>
+                {showCalendar && (
+                  <div className="absolute left-1/2 top-full z-50 mt-2 w-64 -translate-x-1/2 rounded-xl border border-gray-200 bg-white p-3 shadow-lg">
+                    <div className="mb-3 flex items-center justify-between text-xs font-semibold text-gray-800">
+                      <button
+                        type="button"
+                        className="rounded-md border border-gray-200 px-2 py-1"
+                        onClick={() => setLogsMonth((prev) => ({ year: prev.year - 1, month: prev.month }))}
+                      >
+                        ‹
+                      </button>
+                      <span>{logsMonth.year}년</span>
+                      <button
+                        type="button"
+                        className="rounded-md border border-gray-200 px-2 py-1"
+                        onClick={() => setLogsMonth((prev) => ({ year: prev.year + 1, month: prev.month }))}
+                      >
+                        ›
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-[12px]">
+                      {[...Array(12)].map((_, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          className={`rounded-md px-2 py-2 text-center transition ${
+                            idx === logsMonth.month
+                              ? 'bg-black text-white'
+                              : 'text-gray-800 hover:-translate-y-0.5 hover:bg-gray-100'
+                          }`}
+                          onClick={() => {
+                            setLogsMonth({ year: logsMonth.year, month: idx });
+                            setShowCalendar(false);
+                          }}
+                        >
+                          {idx + 1}월
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="rounded-md border border-gray-200 px-2 py-1 text-xs"
+                onClick={() =>
+                  setLogsMonth((prev) => {
+                    const m = prev.month + 1;
+                    if (m > 11) return { year: prev.year + 1, month: 0 };
+                    return { year: prev.year, month: m };
+                  })
+                }
+              >
+                다음달
+              </button>
+            </div>
+          </div>
+          {logsLoading && (
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-gray-600" />
+          )}
+          <div className="max-h-[70vh] overflow-auto rounded-xl border border-gray-200">
+            <table className="min-w-[1200px] border-separate border-spacing-0 text-xs">
+              <thead className="sticky top-0 z-30 bg-gray-50">
+                <tr>
+                  <th className="sticky left-0 bg-gray-50 px-2 py-2 text-left text-gray-600">날짜</th>
+                  {logsData.products.map((p) => (
+                    <th key={p} className="bg-gray-50 px-2 py-2 text-left text-gray-700">
+                      {p}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {logsData.dates.map((d) => (
+                  <tr key={d} className="odd:bg-white even:bg-gray-50">
+                    <td className="sticky left-0 bg-white px-2 py-2 font-semibold text-gray-700">{d.slice(-2)}일</td>
+                    {logsData.products.map((p) => {
+                      const price = logsData.priceMap[`${d}::${p}`];
+                      return (
+                        <td key={`${d}-${p}`} className="px-2 py-2 text-right text-gray-800">
+                          {price != null ? `${formatMoney(price)}원` : '-'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+                {logsData.dates.length === 0 && (
+                  <tr>
+                    <td colSpan={logsData.products.length + 1} className="px-3 py-6 text-center text-gray-500">
+                      기록이 없습니다.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
-        <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-gray-700">
-          <span className="rounded-full bg-gray-100 px-2 py-1">슬랙 Webhook</span>
-          <span className="rounded-full bg-gray-100 px-2 py-1">SMS</span>
-          <span className="rounded-full bg-gray-100 px-2 py-1">목표가 95,000원</span>
+      )}
+      {showTokenGuide && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex max-h-[85vh] flex-col">
+              <div className="flex items-start gap-3 border-b border-gray-100 px-5 py-4">
+                <div className="flex items-center gap-2">
+                  <HelpCircle size={18} className="text-gray-800" />
+                  <p className="text-base font-semibold text-gray-900">텔레그램 토큰 가이드</p>
+                </div>
+                <button
+                  onClick={() => setShowTokenGuide(false)}
+                  className="ml-auto rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:-translate-y-0.5 hover:bg-gray-50"
+                >
+                  닫기
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto px-5 pb-5">
+                <div className="mt-4 space-y-2 text-sm text-gray-800">
+                  <p className="font-semibold text-gray-900">텔레그램을 다운로드 받는 이유?</p>
+                  <div className="rounded-xl bg-cyan-50 px-4 py-3 leading-relaxed text-gray-800">
+                    <p>상품의 가격이 희망추적가에 도달하면</p>
+                    <p>스마트폰 텔레그램으로 바로 알림을 보내줍니다!</p>
+                  </div>
+                </div>
+                <div className="mt-6 space-y-4">
+                  {telegramGuideSteps.map((step, idx) => (
+                    <div key={step.description} className="overflow-hidden rounded-2xl border border-gray-200 shadow-sm">
+                      <div className="flex items-start gap-3 bg-gray-50 px-4 py-3">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-cyan-500 text-sm font-semibold text-white">
+                          {idx + 1}
+                        </span>
+                        <p className="text-sm font-semibold text-gray-900">{step.description}</p>
+                      </div>
+                      <div className="bg-black/90">
+                        <img
+                          src={step.image}
+                          alt={`텔레그램 가이드 ${idx + 1}단계`}
+                          className="mx-auto block max-h-[520px] w-full object-contain"
+                          loading="lazy"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="flex justify-end border-t border-gray-100 px-5 py-4">
+                <button
+                  onClick={() => setShowTokenGuide(false)}
+                  className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:-translate-y-0.5 hover:bg-gray-50"
+                >
+                  닫기
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
-  </div>
-);
+  );
+};
 
 const App = () => {
   const [activeMenu, setActiveMenu] = useState<string>('주문내역 관리');
@@ -1788,7 +3321,9 @@ const App = () => {
   return (
     <AppLayout
       activeMenu={activeMenu}
-      onChangeMenu={setActiveMenu}
+      onChangeMenu={(menu) => {
+        setActiveMenu(menu);
+      }}
       userLoginId={session.loginId}
       membership={session.membership as MembershipTier}
       onLogout={async () => {
@@ -1846,8 +3381,11 @@ const App = () => {
             <div className={activeMenu === '자동 후기작성' ? 'block fade-slide' : 'hidden'}>
               <AutoReviewView key={`auto-review-${dirtyKey}`} session={session} />
             </div>
+            <div className={activeMenu === '상품 재고조회' ? 'block fade-slide' : 'hidden'}>
+              <InventoryCheckView />
+            </div>
             <div className={activeMenu === '상품 가격 추적' ? 'block fade-slide' : 'hidden'}>
-              <PriceTrackingView />
+              <PriceTrackingView session={session} activeMenu={activeMenu} />
             </div>
           </div>
         {musinsaSession !== 'online' && (

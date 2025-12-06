@@ -14,6 +14,7 @@
     ipcRenderer.on('app:updateStatus', listener);
     return () => ipcRenderer.removeListener('app:updateStatus', listener);
   },
+  checkInventory: (payload) => ipcRenderer.invoke('app:checkInventory', payload),
   startUpdate: () => ipcRenderer.invoke('app:startUpdate'),
   loginSupabase: (payload) => ipcRenderer.invoke('app:loginSupabase', payload),
   fetchReviewTargets: () => ipcRenderer.invoke('musinsa:fetchReviewTargets'),
